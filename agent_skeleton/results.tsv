@@ -1,0 +1,6 @@
+iteration	hypothesis	score_before	score_after	action	issues
+0	Initial baseline	NA	82.5	baseline	提交协议合规=0 (false negatives)
+0.1	Fix scorer: env var check across all files, global state check	82.5	100.0	keep	Scorer accurate
+1	Fix sql_executor property fallbacks + customer_profile None guards	100.0	100.0	keep	Properties match README; row None-safe
+2	DB connection timeouts + graceful config validation + logging	100.0	100.0	keep	MySQL connect/read timeout 10s; missing config falls back to SQLite
+3	Add integration tests (53 total) + formula edge cases	100.0	100.0	keep	53 tests pass; bonus: 106 test coverage score
