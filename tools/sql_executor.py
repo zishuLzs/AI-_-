@@ -51,7 +51,10 @@ class SQLExecutor:
                     "MySQL config missing: %s — falling back to SQLite", missing
                 )
                 return SQLExecutor._sqlite_config(base_table, action_table)
+            logger.info("Using MySQL backend: %s:%s/%s", db_host, config["port"], config["database"])
             return config
+
+        logger.info("TASK2_DB_HOST not set, using SQLite backend")
 
         return SQLExecutor._sqlite_config(base_table, action_table)
 
@@ -59,10 +62,9 @@ class SQLExecutor:
     def _sqlite_config(base_table: str, action_table: str) -> dict[str, Any]:
         sqlite_path = os.environ.get(
             "TASK2_SQLITE_PATH",
-            os.path.join(
-                os.path.dirname(os.path.dirname(__file__)), "pension_agent.db"
-            ),
+            os.path.join(os.getcwd(), "pension_agent.db"),
         )
+        logger.info("Using SQLite backend at %s", sqlite_path)
         return {
             "backend": "sqlite",
             "path": sqlite_path,
