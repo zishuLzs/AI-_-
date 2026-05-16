@@ -165,6 +165,27 @@ class TestIntentRouter(unittest.TestCase):
         )
         self.assertEqual(route.scenario.get("inflation_annual"), Decimal("0.03"))
 
+    def test_extract_allocation_objective_maximize_return(self) -> None:
+        route = self.router.route(
+            "如果客户 V500001 想要追求投资收益最大化，请为他提供资产配置方案。",
+            "s1",
+        )
+        self.assertEqual(
+            route.scenario.get("allocation_objective"),
+            "maximize_return",
+        )
+        self.assertNotIn("allocation_objective", route.preferences)
+
+    def test_extract_allocation_objective_minimize_risk(self) -> None:
+        route = self.router.route(
+            "客户 V500001 想要在满足养老需求基础上最小化风险波动，请为他提供资产配置方案。",
+            "s1",
+        )
+        self.assertEqual(
+            route.preferences.get("allocation_objective"),
+            "minimize_risk",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -40,10 +40,14 @@ class LLMComposer:
         payload = {
             "question": question,
             "intent": plan.intent,
+            "case_tag": plan.case_tag,
+            "answer_mode": plan.answer_mode,
             "tool_results": tool_results,
         }
+        style_hint = self._build_case_style_hint(plan.case_tag)
         user_prompt = (
             f"根据以下结构化数据回答问题。\n"
+            f"答题风格要求：{style_hint}\n"
             f"{json.dumps(payload, ensure_ascii=False)}\n"
             f"只输出最终答案。"
         )
@@ -77,6 +81,26 @@ class LLMComposer:
         except Exception as e:
             logger.error("Proposal generation failed: %s", e)
             return "抱歉，当前建议书生成失败。"
+
+    @staticmethod
+    def _build_case_style_hint(case_tag: str) -> str:
+        style_map = {
+            "profile_single_value": "只输出最终值，例如“22 岁”“5000 元”“R3”。",
+            "profile_count": "只输出计数结果，例如“2 个”。",
+            "behavior_single_preference": "只输出产品名称，例如“现金理财”。",
+            "behavior_aggregate_stat": "只输出最终统计值，例如“29 岁”。",
+            "retirement_duration": "只输出时长，例如“12 年 7 个月”。",
+            "retirement_monthly_spend": "只输出金额，例如“9076 元”。",
+            "retirement_required_asset": "只输出金额，例如“985979 元”。",
+            "retirement_accumulated_asset": "只输出金额，例如“772715 元”。",
+            "allocation_prediction": "只输出最可能的产品名称。",
+            "allocation_longevity_adjust": "只输出最应该增加配置的产品名称。",
+            "allocation_goal_check": "先给出能否达成及调整结论，再用简短说明给出缺口和替代产品。",
+            "allocation_max_return": "先给出最优配置结论，再用一句解释为什么。",
+            "allocation_min_risk": "先给出比例方案，再用2到4句说明主力产品、最低比例和剩余比例用途。",
+            "retirement_scenario_inflation": "第一行给最终金额，随后用极简步骤说明分段通胀和缺口测算。",
+        }
+        return style_map.get(case_tag, "只基于结构化数据给出简洁答案。")
 
     def _fallback_short(
         self,

@@ -28,6 +28,11 @@ class SQLExecutor:
     def get_db_config() -> dict[str, Any]:
         base_table = os.environ.get("TASK2_BASE_TABLE", "train_base_table")
         action_table = os.environ.get("TASK2_ACTION_TABLE", "train_action_table")
+
+        # Use SQLite when explicitly requested or when MySQL host is unreachable
+        if os.environ.get("TASK2_SQLITE_PATH"):
+            return SQLExecutor._sqlite_config(base_table, action_table)
+
         return {
             "backend": "mysql",
             "host": os.environ.get("TASK2_DB_HOST", _DEFAULT_HOST),

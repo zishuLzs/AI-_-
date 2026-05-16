@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from llm.schemas import PlannerOutput, ToolCall
+from models import SessionState
 from orchestrator.failures import FailureCategory, FailureRecord
 from skills.allocation_planning import AllocationPlanningSkill
 from skills.behavior_analysis import BehaviorAnalysisSkill
@@ -54,6 +55,7 @@ class ToolExecutor:
             self.memory.remember_preferences(session_id, mu.preferences)
         if mu.scenario:
             self.memory.remember_scenario(session_id, mu.scenario)
+        self.memory.set_last_case_tag(session_id, plan.case_tag)
 
     def _dispatch(self, tc: ToolCall, session_id: str, question: str) -> Any:
         name = tc.name
@@ -237,7 +239,65 @@ class ToolExecutor:
             },
             "focus_points": state.focus_points,
             "preferences": state.preferences,
+            "proposal_guidance": self._build_proposal_guidance(state),
         }
+
+    @staticmethod
+    def _build_proposal_guidance(state: SessionState) -> dict[str, Any]:
+        pref_goal = state.preferences.get("retirement_goal")
+        scenario_goal = state.scenario.get("retirement_goal")
+        pref_goal_expend = state.preferences.get("retirement_goal_monthly_expend")
+        scenario_goal_expend = state.scenario.get("retirement_goal_monthly_expend")
+        pref_objective = state.preferences.get("allocation_objective")
+        scenario_objective = state.scenario.get("allocation_objective")
+
+        guidance: dict[str, Any] = {
+            "effective_retirement_goal": pref_goal or scenario_goal,
+            "retirement_goal_source": (
+                "preference" if pref_goal else "scenario" if scenario_goal else "none"
+            ),
+            "effective_retirement_goal_monthly_expend": (
+                pref_goal_expend if pref_goal_expend is not None else scenario_goal_expend
+            ),
+            "retirement_goal_monthly_expend_source": (
+                "preference"
+                if pref_goal_expend is not None
+                else "scenario"
+                if scenario_goal_expend is not None
+                else "none"
+            ),
+            "effective_allocation_objective": (
+                pref_objective if pref_objective is not None else scenario_objective
+            ),
+            "allocation_objective_source": (
+                "preference"
+                if pref_objective is not None
+                else "scenario"
+                if scenario_objective is not None
+                else "none"
+            ),
+            "conflict_notes": [],
+        }
+
+        conflict_notes: list[str] = []
+        if (
+            pref_objective is not None
+            and scenario_objective is not None
+            and pref_objective != scenario_objective
+        ):
+            conflict_notes.append(
+                "客户长期观点与本轮临时假设在资产配置目标上冲突，最终建议书必须以长期观点为准。"
+            )
+        if (
+            pref_goal_expend is not None
+            and scenario_goal_expend is not None
+            and pref_goal_expend != scenario_goal_expend
+        ):
+            conflict_notes.append(
+                "客户长期养老目标金额与本轮临时假设金额不同，建议书中的正式养老目标必须优先采用长期目标。"
+            )
+        guidance["conflict_notes"] = conflict_notes
+        return guidance
 
 
 class ToolExecutionFailure(Exception):

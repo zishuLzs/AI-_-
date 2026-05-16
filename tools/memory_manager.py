@@ -45,6 +45,7 @@ class MemoryManager:
         state.preferences.clear()
         state.focus_points.clear()
         state.scenario.clear()
+        state.last_case_tag = None
 
     def remember_profile(self, session_id: str, profile: CustomerProfile) -> None:
         state = self.get_session(session_id)
@@ -65,3 +66,7 @@ class MemoryManager:
     def clear_scenario(self, session_id: str) -> None:
         state = self.get_session(session_id)
         state.scenario.clear()
+
+    def set_last_case_tag(self, session_id: str, case_tag: str) -> None:
+        state = self.get_session(session_id)
+        state.last_case_tag = case_tag

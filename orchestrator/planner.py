@@ -110,6 +110,8 @@ class LLMPlanner:
             summary["focus_points"] = state.focus_points
         if state.scenario:
             summary["pending_scenario"] = state.scenario
+        if state.last_case_tag:
+            summary["last_case_tag"] = state.last_case_tag
         return summary
 
     @staticmethod

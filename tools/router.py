@@ -141,6 +141,13 @@ class IntentRouter:
                     amount *= Decimal("10000")
                 scenario["extra_monthly_saving"] = amount
 
+            if "最大化投资收益" in clause or (
+                "收益最大化" in clause and "风险" not in clause
+            ):
+                target["allocation_objective"] = "maximize_return"
+            if "最小化风险波动" in clause or "风险最小" in clause:
+                target["allocation_objective"] = "minimize_risk"
+
             # Focus points: only from non-hypothetical clauses
             if not clause_is_hyp:
                 if "稳健" in clause:

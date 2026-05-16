@@ -40,6 +40,37 @@ class AllocationEngine:
         years_to_retirement = retirement_result.months_to_retirement / 12
         extra_saving = Decimal(str((scenario or {}).get("extra_monthly_saving", "0")))
         actual_monthly_saving = profile.monthly_saving + extra_saving
+        allocation_objective = str(
+            preferences.get("allocation_objective", "")
+        ).strip()
+
+        if allocation_objective == "maximize_return":
+            best_product = max(
+                candidates,
+                key=lambda product_name: self.config.product_specs[product_name].annual_return,
+            )
+            spec = self.config.product_specs[best_product]
+            projected_asset = self._project_asset(
+                profile,
+                retirement_result.months_to_retirement,
+                spec.annual_return,
+                actual_monthly_saving,
+            )
+            return AllocationPlan(
+                allocation=[
+                    AllocationItem(
+                        product=best_product,
+                        weight=Decimal("1"),
+                        expected_return=spec.annual_return,
+                        risk_score=_PRODUCT_RISK.get(best_product, 1),
+                    )
+                ],
+                portfolio_return=spec.annual_return,
+                portfolio_risk=Decimal(_PRODUCT_RISK.get(best_product, 1)),
+                retirement_asset_projection=round_money(projected_asset),
+                covers_gap=projected_asset >= retirement_result.required_asset_at_retirement,
+                reasoning_tags=["收益最大化", "单一主力产品"],
+            )
 
         best: AllocationPlan | None = None
         best_risk: Decimal = Decimal("Inf")
@@ -92,10 +123,24 @@ class AllocationEngine:
                 )
 
                 if covers_gap:
+                    objective_prefers_return = allocation_objective == "maximize_return"
+                    objective_prefers_risk = allocation_objective == "minimize_risk"
                     if (
                         best is None
                         or not best.covers_gap
-                        or portfolio_risk < best_risk
+                        or (
+                            objective_prefers_return
+                            and portfolio_return > best.portfolio_return
+                        )
+                        or (
+                            objective_prefers_return
+                            and portfolio_return == best.portfolio_return
+                            and portfolio_risk < best_risk
+                        )
+                        or (
+                            not objective_prefers_return
+                            and portfolio_risk < best_risk
+                        )
                         or (
                             portfolio_risk == best_risk
                             and preference_match > best_preference_match

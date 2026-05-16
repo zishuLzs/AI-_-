@@ -5,6 +5,7 @@ from typing import Any
 
 from llm.schemas import (
     ANSWER_MODE_ENUM,
+    CASE_TAG_ENUM,
     INTENT_ENUM,
     TOOL_WHITELIST,
     VALID_ACTION_TYPES,
@@ -38,6 +39,10 @@ class PlanValidator:
         if answer_mode not in ANSWER_MODE_ENUM:
             answer_mode = "short"
 
+        case_tag = data.get("case_tag", "fallback_unknown")
+        if case_tag not in CASE_TAG_ENUM:
+            case_tag = "fallback_unknown"
+
         customer_id = data.get("customer_id")
         if customer_id is not None and not isinstance(customer_id, str):
             errors.append("customer_id must be string or null")
@@ -54,6 +59,7 @@ class PlanValidator:
             memory_update=memory_update,
             tool_calls=tool_calls,
             answer_mode=answer_mode,
+            case_tag=case_tag,
         )
 
     @staticmethod
@@ -73,10 +79,16 @@ class PlanValidator:
                 "retirement_goal_monthly_expend",
                 "risk_preference_text",
                 "focus_points",
+                "allocation_objective",
             }
         )
         allowed_scenario_keys = frozenset(
-            {"inflation_annual", "extra_monthly_saving", "retirement_goal_monthly_expend"}
+            {
+                "inflation_annual",
+                "extra_monthly_saving",
+                "retirement_goal_monthly_expend",
+                "allocation_objective",
+            }
         )
         preferences = {k: v for k, v in prefs.items() if k in allowed_pref_keys}
         scenario_clean = {k: v for k, v in scenario.items() if k in allowed_scenario_keys}

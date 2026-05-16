@@ -30,6 +30,7 @@ class SessionState:
     preferences: dict[str, Any] = field(default_factory=dict)
     focus_points: list[str] = field(default_factory=list)
     scenario: dict[str, Any] = field(default_factory=dict)
+    last_case_tag: str | None = None
 
 
 @dataclass

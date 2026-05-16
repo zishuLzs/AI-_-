@@ -15,6 +15,26 @@ INTENT_ENUM = (
 
 ANSWER_MODE_ENUM = ("short", "normal", "proposal")
 
+CASE_TAG_ENUM = (
+    "profile_single_value",
+    "profile_count",
+    "behavior_single_preference",
+    "behavior_aggregate_stat",
+    "retirement_duration",
+    "retirement_monthly_spend",
+    "retirement_required_asset",
+    "retirement_accumulated_asset",
+    "allocation_goal_check",
+    "allocation_prediction",
+    "allocation_longevity_adjust",
+    "allocation_max_return",
+    "allocation_min_risk",
+    "retirement_scenario_inflation",
+    "proposal_full",
+    "context_preference",
+    "fallback_unknown",
+)
+
 TOOL_WHITELIST = frozenset(
     {
         "get_profile",
@@ -55,6 +75,7 @@ class PlannerOutput:
     memory_update: MemoryUpdate = field(default_factory=MemoryUpdate)
     tool_calls: list[ToolCall] = field(default_factory=list)
     answer_mode: str = "short"
+    case_tag: str = "fallback_unknown"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "PlannerOutput":
@@ -73,6 +94,7 @@ class PlannerOutput:
             memory_update=memory_update,
             tool_calls=tool_calls,
             answer_mode=data.get("answer_mode", "short"),
+            case_tag=data.get("case_tag", "fallback_unknown"),
         )
 
 

@@ -289,6 +289,56 @@ class TestAllocationEngine(unittest.TestCase):
         self.assertTrue(plan.allocation)
         self.assertIsNotNone(plan.retirement_asset_projection)
 
+    def test_maximize_return_prefers_highest_return_product(self) -> None:
+        engine = AllocationEngine(DEFAULT_CONFIG)
+        profile = CustomerProfile(
+            user_id="V500001",
+            age=22,
+            gender="男",
+            risk_level="R3",
+            net_asset=Decimal("5000"),
+            monthly_income=Decimal("5000"),
+            monthly_expend=Decimal("4000"),
+            pension=Decimal("5000"),
+            enterprise_ann=Decimal("0"),
+        )
+        formula = RetirementFormulaEngine(DEFAULT_CONFIG)
+        retirement = formula.calculate(profile, {"retirement_goal": "消费水平不下降"}, {})
+        plan = engine.build_plan(
+            profile,
+            retirement,
+            {"top_product": "现金理财", "counts": {"现金理财": 9}},
+            {"allocation_objective": "maximize_return"},
+        )
+        top_item = max(plan.allocation, key=lambda item: item.weight)
+        self.assertEqual(top_item.product, "固收+产品")
+        self.assertEqual(int(top_item.weight * 100), 100)
+
+    def test_minimize_risk_keeps_diversified_solution(self) -> None:
+        engine = AllocationEngine(DEFAULT_CONFIG)
+        profile = CustomerProfile(
+            user_id="V500001",
+            age=22,
+            gender="男",
+            risk_level="R3",
+            net_asset=Decimal("5000"),
+            monthly_income=Decimal("5000"),
+            monthly_expend=Decimal("4000"),
+            pension=Decimal("5000"),
+            enterprise_ann=Decimal("0"),
+        )
+        formula = RetirementFormulaEngine(DEFAULT_CONFIG)
+        retirement = formula.calculate(profile, {"retirement_goal": "消费水平不下降"}, {})
+        plan = engine.build_plan(
+            profile,
+            retirement,
+            {"top_product": "现金理财", "counts": {"现金理财": 9}},
+            {"focus_points": ["流动性", "长寿风险"], "allocation_objective": "minimize_risk"},
+        )
+        non_zero = {item.product: int(item.weight * 100) for item in plan.allocation if item.weight > 0}
+        self.assertIn("固收+产品", non_zero)
+        self.assertGreaterEqual(len(non_zero), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
