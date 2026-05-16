@@ -17,7 +17,6 @@ import logging
 import os
 import re
 import sys
-import threading
 
 _LOG_LEVEL = os.getenv("TASK2_LOG_LEVEL", "CRITICAL").upper()
 logging.basicConfig(
@@ -39,12 +38,6 @@ from skills.customer_profile import CustomerProfileSkill
 from skills.retirement_calc import RetirementCalculationSkill
 from tools.memory_manager import MemoryManager
 from tools.sql_executor import SQLExecutor
-
-
-_RUNTIME_LOCK = threading.Lock()
-_AGENT: "PensionPlanningAgent | None" = None
-_SESSION_ID = "eval_session"
-
 
 def _build_agent() -> "PensionPlanningAgent":
     llm_client = LLMClient()
@@ -75,16 +68,6 @@ def _build_agent() -> "PensionPlanningAgent":
         composer=composer,
         memory_manager=memory_manager,
     )
-
-
-def _get_agent() -> "PensionPlanningAgent":
-    global _AGENT
-    with _RUNTIME_LOCK:
-        if _AGENT is None:
-            _AGENT = _build_agent()
-        return _AGENT
-
-
 class PensionPlanningAgent:
     def __init__(
         self,
@@ -198,8 +181,8 @@ class PensionPlanningAgent:
 def run(inf: str) -> str:
     """Main entry point for the evaluation system.
 
-    State is preserved within the same process to support multi-turn
-    follow-up questions, while different processes remain isolated.
+    Each invocation builds a fresh agent and answers independently,
+    so no cross-question state is shared across calls.
 
     Args:
         inf: The question string from the evaluation system.
@@ -207,9 +190,9 @@ def run(inf: str) -> str:
     Returns:
         The answer string.
     """
-    agent = _get_agent()
+    agent = _build_agent()
     try:
-        return agent.answer(inf, _SESSION_ID)
+        return agent.answer(inf, "single_run")
     except Exception as exc:
         logger.warning("run() failed: %s", exc)
         return "抱歉，暂时无法回答该问题。"

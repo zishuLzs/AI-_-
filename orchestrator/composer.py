@@ -204,6 +204,8 @@ class LLMComposer:
         llm_answer: str,
         fallback: str,
     ) -> str:
+        if fallback and self._prefer_deterministic_output(plan.case_tag):
+            return fallback
         if not llm_answer:
             return fallback or self._fallback_short(question, plan, tool_results)
         normalized = self._normalize_answer_text(llm_answer)
@@ -212,6 +214,29 @@ class LLMComposer:
         if self._is_llm_answer_acceptable(plan.case_tag, llm_answer, fallback):
             return llm_answer.strip()
         return fallback or self._fallback_short(question, plan, tool_results)
+
+    @staticmethod
+    def _prefer_deterministic_output(case_tag: str) -> bool:
+        return case_tag in {
+            "profile_single_value",
+            "profile_count",
+            "profile_aggregate_value",
+            "profile_ranking",
+            "behavior_single_preference",
+            "behavior_aggregate_stat",
+            "behavior_stat",
+            "behavior_ranking",
+            "retirement_duration",
+            "retirement_monthly_spend",
+            "retirement_required_asset",
+            "retirement_accumulated_asset",
+            "retirement_gap",
+            "retirement_aggregate",
+            "retirement_ranking",
+            "allocation_max_return",
+            "allocation_metric",
+            "product_query",
+        }
 
     @classmethod
     def _is_llm_answer_acceptable(cls, case_tag: str, llm_answer: str, fallback: str) -> bool:
@@ -401,6 +426,14 @@ class LLMComposer:
                 "预计可积攒多少钱" in question
                 and allocation.get("retirement_asset_projection") is not None
             ):
+                objective = (
+                    plan.memory_update.preferences.get("allocation_objective")
+                    or plan.memory_update.scenario.get("allocation_objective")
+                )
+                if objective == "minimize_risk":
+                    projection = self._resolve_min_risk_projection(allocation)
+                    if projection is not None:
+                        return f"{projection} 元"
                 return f"{allocation['retirement_asset_projection']} 元"
 
         if case_tag == "retirement_scenario_inflation" and retirement:
@@ -434,6 +467,28 @@ class LLMComposer:
                 return text
 
         return llm_answer.strip()
+
+    @staticmethod
+    def _resolve_min_risk_projection(allocation: dict[str, Any]) -> int | None:
+        rows = allocation.get("allocation", [])
+        product_projections = allocation.get("product_projections", [])
+        if not isinstance(rows, list) or not isinstance(product_projections, list) or not rows:
+            return None
+
+        try:
+            primary_row = max(rows, key=lambda item: float(item.get("weight", "0")))
+            primary_product = str(primary_row.get("product", ""))
+            primary_weight = Decimal(str(primary_row.get("weight", "0")))
+            projection_map = {
+                str(item.get("product", "")): Decimal(str(item.get("retirement_asset_projection", "0")))
+                for item in product_projections
+                if isinstance(item, dict) and item.get("product") is not None
+            }
+            if primary_product not in projection_map:
+                return None
+            return int((projection_map[primary_product] * primary_weight).quantize(Decimal("1")))
+        except Exception:
+            return None
 
     @staticmethod
     def _serialize_semantic_plan(plan: PlannerOutput) -> dict[str, Any] | None:

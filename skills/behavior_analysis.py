@@ -63,13 +63,6 @@ class BehaviorAnalysisSkill:
         count = result["counts"].get(top_product, 0)
         return f"客户 {customer_id} 行为最多的产品类型为 {top_product}，相关行为共 {count} 次。"
 
-    def list_actions(self) -> list[dict[str, Any]]:
-        sql = (
-            "SELECT user_id, action_typ, prod_typ, prod_sub_typ, rsk_lvl "
-            f"FROM {self.sql_executor.action_table} WHERE prod_typ <> '非财富'"
-        )
-        return self.sql_executor.fetch_all(sql)
-
     @staticmethod
     def _map_product(row: dict[str, Any]) -> str:
         prod_typ = str(row.get("prod_typ", ""))
@@ -101,57 +94,115 @@ class BehaviorAnalysisSkill:
         customer_id = params.get("customer_id")
         product = params.get("product")
         min_count = int(params.get("min_count", 1))
-
-        rows = self.list_actions()
-        filtered = []
-        for row in rows:
-            mapped_product = self._map_product(row)
-            if product and mapped_product != str(product):
-                continue
-            if not self._matches_action(str(row.get("action_typ", "")), action_type):
-                continue
-            if customer_id and str(row.get("user_id")) != str(customer_id):
-                continue
-            filtered.append({**row, "mapped_product": mapped_product})
+        where_sql, where_params = self._build_behavior_where_clause(action_type, product, customer_id)
+        action_table = self.sql_executor.action_table
+        base_table = self.sql_executor.base_table
 
         if agg == "total_count":
-            count = len(filtered)
+            sql = (
+                f"SELECT COUNT(*) AS cnt FROM {action_table} "
+                f"WHERE {where_sql}"
+            )
+            row = self.sql_executor.fetch_one(sql, tuple(where_params))
+            count = int(row["cnt"]) if row and row.get("cnt") is not None else 0
             return {"result": f"{count} 次", "value": count}
 
-        grouped: dict[str, int] = {}
-        for row in filtered:
-            user_id = str(row.get("user_id", ""))
-            grouped[user_id] = grouped.get(user_id, 0) + 1
-
-        qualified_ids = [user_id for user_id, cnt in grouped.items() if cnt >= min_count]
-
-        if agg == "customer_count":
-            return {"result": f"{len(qualified_ids)} 个", "value": len(qualified_ids)}
+        grouped_sql = f"""
+        SELECT user_id, COUNT(*) AS cnt
+        FROM {action_table}
+        WHERE {where_sql}
+        GROUP BY user_id
+        """.strip()
 
         if agg == "customer_action_count":
-            count = grouped.get(str(customer_id), 0)
+            sql = f"SELECT cnt FROM ({grouped_sql}) t WHERE user_id = %s"
+            row = self.sql_executor.fetch_one(sql, tuple(where_params + [str(customer_id)]))
+            count = int(row["cnt"]) if row and row.get("cnt") is not None else 0
             return {"result": f"{count} 次", "value": count}
 
+        if agg == "customer_count":
+            sql = f"SELECT COUNT(*) AS cnt FROM ({grouped_sql}) t WHERE cnt >= %s"
+            row = self.sql_executor.fetch_one(sql, tuple(where_params + [min_count]))
+            count = int(row["cnt"]) if row and row.get("cnt") is not None else 0
+            return {"result": f"{count} 个", "value": count}
+
         if agg == "max_customer_id":
-            if not grouped:
+            sql = (
+                f"SELECT user_id, cnt FROM ({grouped_sql}) t "
+                "ORDER BY cnt DESC, user_id DESC LIMIT 1"
+            )
+            row = self.sql_executor.fetch_one(sql, tuple(where_params))
+            if not row:
                 return {"result": "未找到符合条件的客户。"}
-            winner = max(grouped.items(), key=lambda item: (item[1], item[0]))
-            return {"result": winner[0], "customer_id": winner[0], "count": winner[1]}
+            return {"result": str(row["user_id"]), "customer_id": str(row["user_id"]), "count": int(row["cnt"])}
 
         if agg == "avg_age":
-            if not qualified_ids or self.profile_skill is None:
+            if self.profile_skill is None:
                 return {"result": "未找到符合条件的客户。"}
-            profile_map = {
-                profile.user_id: profile
-                for profile in self.profile_skill.list_profiles()
-            }
-            ages = [profile_map[user_id].age for user_id in qualified_ids if user_id in profile_map]
-            if not ages:
+            sql = f"""
+            SELECT ROUND(AVG(b.Age), 6) AS avg_age
+            FROM (
+                {grouped_sql}
+            ) t
+            INNER JOIN {base_table} b ON b.User_ID = t.user_id
+            WHERE t.cnt >= %s
+            """.strip()
+            row = self.sql_executor.fetch_one(sql, tuple(where_params + [min_count]))
+            if not row or row.get("avg_age") is None:
                 return {"result": "未找到符合条件的客户。"}
-            avg_age = int((sum(Decimal(age) for age in ages) / Decimal(len(ages))).quantize(Decimal("1")))
+            avg_age = int(Decimal(str(row["avg_age"])).quantize(Decimal("1")))
             return {"result": f"{avg_age} 岁", "value": avg_age}
 
         raise ValueError(f"Unsupported behavior aggregate: {agg}")
+
+    def _build_behavior_where_clause(
+        self,
+        action_type: str,
+        product: object,
+        customer_id: object,
+    ) -> tuple[str, list[object]]:
+        conditions = ["prod_typ <> '非财富'"]
+        params: list[object] = []
+
+        action_types = self._action_types_from_label(action_type)
+        placeholders = ", ".join(["%s"] * len(action_types))
+        conditions.append(f"action_typ IN ({placeholders})")
+        params.extend(action_types)
+
+        if product:
+            prod_filter, rsk_filter = self._product_filters_by_name(str(product))
+            if prod_filter:
+                conditions.append(prod_filter)
+            if rsk_filter:
+                conditions.append(rsk_filter)
+
+        if customer_id:
+            conditions.append("user_id = %s")
+            params.append(str(customer_id))
+
+        return " AND ".join(conditions), params
+
+    @staticmethod
+    def _action_types_from_label(action_type: str) -> list[str]:
+        if action_type == "浏览":
+            return _VIEW_ACTION_TYPES
+        return [action_type]
+
+    @staticmethod
+    def _product_filters_by_name(product: str) -> tuple[str, str]:
+        if product == "权益类产品":
+            return "prod_typ = '基金'", "rsk_lvl IN ('R4', 'R5')"
+        if product == "短债类产品":
+            return "prod_typ IN ('理财', '基金')", "rsk_lvl = 'R2'"
+        if product == "固收+产品":
+            return "prod_typ IN ('理财', '基金')", "rsk_lvl = 'R3'"
+        if product == "年金险":
+            return "prod_typ = '保险' AND prod_sub_typ IN ('税延养老年金', '养老年金')", ""
+        if product == "现金理财":
+            return "prod_sub_typ = '现金' AND prod_typ = '理财'", ""
+        if product == "定期存款":
+            return "prod_typ = '存款' AND prod_sub_typ = '一般性'", ""
+        return "", ""
 
     def answer_question(
         self,
