@@ -29,7 +29,7 @@ TOOL_WHITELIST = frozenset(
     }
 )
 
-VALID_METRICS = frozenset({"age", "monthly_income", "monthly_expend", "net_asset"})
+VALID_METRICS = frozenset({"age", "avg_age", "monthly_income", "monthly_expend", "net_asset"})
 VALID_PRODUCTS = frozenset(
     {"现金理财", "定期存款", "短债类产品", "固收+产品", "权益类产品", "年金险"}
 )

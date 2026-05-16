@@ -68,7 +68,8 @@ class SQLTemplates:
         condition_sql: str,
         base_table: str = "base_table",
     ) -> str:
-        return f"SELECT COUNT(*) AS cnt FROM {base_table} WHERE {condition_sql}"
+        """Deprecated alias — use count_by_condition."""
+        return SQLTemplates.count_by_condition(condition_sql, base_table)
 
     @staticmethod
     def avg_field_by_condition(
@@ -76,10 +77,8 @@ class SQLTemplates:
         condition_sql: str,
         base_table: str = "base_table",
     ) -> str:
-        return (
-            f"SELECT ROUND(AVG({field_name}), 6) AS avg_value "
-            f"FROM {base_table} WHERE {condition_sql}"
-        )
+        """Deprecated alias — use avg_by_condition."""
+        return SQLTemplates.avg_by_condition(field_name, condition_sql, base_table)
 
     @staticmethod
     def _product_case_expr() -> str:
@@ -148,44 +147,6 @@ class SQLTemplates:
         action_table: str = "action_table",
         base_table: str = "base_table",
     ) -> str:
-        rsk_condition = ", ".join(f"'{r}'" for r in rsk_lvl_list)
-        act_condition = ", ".join(f"'{a}'" for a in act_types)
-        return f"""
-        WITH T AS (
-            SELECT user_id, COUNT(*) AS view_cnt
-            FROM {action_table}
-            WHERE action_typ IN ({act_condition})
-              AND prod_typ = '{prod_typ}'
-              AND rsk_lvl IN ({rsk_condition})
-            GROUP BY user_id
-            HAVING view_cnt >= {min_count}
-        )
-        SELECT ROUND(AVG(b.Age), 6) AS avg_age
-        FROM T INNER JOIN {base_table} b ON b.User_ID = T.user_id
-        """.strip()
-
-    @staticmethod
-    def avg_age_by_behavior_multi_prod(
-        prod_types: list[str],
-        rsk_lvl_list: list[str],
-        act_types: list[str],
-        min_count: int,
-        action_table: str = "action_table",
-        base_table: str = "base_table",
-    ) -> str:
-        prod_condition = ", ".join(f"'{p}'" for p in prod_types)
-        rsk_condition = ", ".join(f"'{r}'" for r in rsk_lvl_list)
-        act_condition = ", ".join(f"'{a}'" for a in act_types)
-        return f"""
-        WITH T AS (
-            SELECT user_id, COUNT(*) AS view_cnt
-            FROM {action_table}
-            WHERE action_typ IN ({act_condition})
-              AND prod_typ IN ({prod_condition})
-              AND rsk_lvl IN ({rsk_condition})
-            GROUP BY user_id
-            HAVING view_cnt >= {min_count}
-        )
-        SELECT ROUND(AVG(b.Age), 6) AS avg_age
-        FROM T INNER JOIN {base_table} b ON b.User_ID = T.user_id
-        """.strip()
+        """Deprecated — behavior queries are built inline in BehaviorAnalysisSkill."""
+        from skills.behavior_analysis import BehaviorAnalysisSkill
+        raise NotImplementedError("Use BehaviorAnalysisSkill instead")

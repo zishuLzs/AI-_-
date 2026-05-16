@@ -33,10 +33,13 @@ class AllocationEngine:
         retirement_result: RetirementResult,
         behavior_summary: dict[str, Any] | None,
         preferences: dict[str, Any],
+        scenario: dict[str, Any] | None = None,
     ) -> AllocationPlan:
         candidates = self._allowed_products(profile.risk_level)
         top_product = (behavior_summary or {}).get("top_product")
         years_to_retirement = retirement_result.months_to_retirement / 12
+        extra_saving = Decimal(str((scenario or {}).get("extra_monthly_saving", "0")))
+        actual_monthly_saving = profile.monthly_saving + extra_saving
 
         best: AllocationPlan | None = None
         best_risk: Decimal = Decimal("Inf")
@@ -65,7 +68,8 @@ class AllocationEngine:
                     portfolio_risk += weight * Decimal(risk_score)
 
                 projected_asset = self._project_asset(
-                    profile, retirement_result.months_to_retirement, portfolio_return
+                    profile, retirement_result.months_to_retirement,
+                    portfolio_return, actual_monthly_saving,
                 )
                 shortfall = (
                     retirement_result.required_asset_at_retirement - projected_asset
@@ -203,15 +207,14 @@ class AllocationEngine:
         profile: CustomerProfile,
         months_to_retirement: int,
         annual_return: Decimal,
+        monthly_saving: Decimal,
     ) -> Decimal:
         monthly_rate = annual_return / Decimal("12")
         growth = (Decimal("1") + monthly_rate) ** months_to_retirement
         if monthly_rate == 0:
-            return profile.net_asset + profile.monthly_saving * Decimal(
-                months_to_retirement
-            )
+            return profile.net_asset + monthly_saving * Decimal(months_to_retirement)
         net_asset_fv = profile.net_asset * growth
-        saving_fv = profile.monthly_saving * ((growth - Decimal("1")) / monthly_rate)
+        saving_fv = monthly_saving * ((growth - Decimal("1")) / monthly_rate)
         return net_asset_fv + saving_fv
 
     @staticmethod

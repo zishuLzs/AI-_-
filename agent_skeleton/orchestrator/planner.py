@@ -41,7 +41,7 @@ class LLMPlanner:
             try:
                 data = self.llm._extract_json(raw_output)
             except Exception:
-                raise self._fail(
+                raise LLMPlanner._fail(
                     FailureCategory.PLANNER_SCHEMA_ERROR,
                     question,
                     f"Parse failed after repair: {e}",
@@ -58,7 +58,7 @@ class LLMPlanner:
                 repaired_data = self.llm._extract_json(raw_output)
                 plan = PlanValidator.validate(repaired_data)
             except Exception:
-                raise self._fail(
+                raise LLMPlanner._fail(
                     FailureCategory.PLANNER_SCHEMA_ERROR,
                     question,
                     e.detail,
@@ -71,7 +71,7 @@ class LLMPlanner:
             if state.customer_id:
                 plan.customer_id = state.customer_id
             else:
-                raise self._fail(
+                raise LLMPlanner._fail(
                     FailureCategory.PLANNER_MISSING_CUSTOMER_ID,
                     question,
                     "customer_id missing for intent requiring one",

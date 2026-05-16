@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from models import SessionState
 from tools.memory_manager import MemoryManager
 
 from skills.allocation_planning import AllocationPlanningSkill
@@ -52,8 +53,6 @@ class ProposalWriterSkill:
             reverse=True,
         )
         for item in ordered_items:
-            if item.weight <= 0:
-                continue
             weight_pct = int(item.weight * 100)
             expected_pct = f"{item.expected_return * 100:.2f}"
             rationale = self._product_rationale(
@@ -151,7 +150,7 @@ class ProposalWriterSkill:
             return base_rationale + "，特别匹配客户对长寿风险的关注"
         return base_rationale
 
-    def _build_assumptions(self, state) -> str:
+    def _build_assumptions(self, state: SessionState) -> str:
         """Build assumptions section, clearly separating defaults, preferences, and scenarios."""
         lines = [
             "**系统默认假设：**",

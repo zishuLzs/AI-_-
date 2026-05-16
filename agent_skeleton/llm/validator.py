@@ -81,6 +81,13 @@ class PlanValidator:
         preferences = {k: v for k, v in prefs.items() if k in allowed_pref_keys}
         scenario_clean = {k: v for k, v in scenario.items() if k in allowed_scenario_keys}
 
+        dropped_prefs = set(prefs) - allowed_pref_keys
+        dropped_scenario = set(scenario) - allowed_scenario_keys
+        if dropped_prefs:
+            logger.warning("Dropping unknown preference keys: %s", dropped_prefs)
+        if dropped_scenario:
+            logger.warning("Dropping unknown scenario keys: %s", dropped_scenario)
+
         if "focus_points" in preferences:
             fps = preferences["focus_points"]
             if isinstance(fps, list):
@@ -100,6 +107,7 @@ class PlanValidator:
                 continue
             name = tc.get("name", "")
             if name not in TOOL_WHITELIST:
+                logger.warning("Dropping unknown tool: '%s'", name)
                 continue
             params = tc.get("params", {})
             if not isinstance(params, dict):

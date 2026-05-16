@@ -94,7 +94,7 @@ class SQLExecutor:
                     connect_timeout=_DB_TIMEOUT,
                     read_timeout=_DB_TIMEOUT,
                 )
-            except Exception as exc:
+            except (pymysql.err.OperationalError, pymysql.err.InternalError) as exc:
                 raise ConnectionError(
                     f"MySQL connection failed: {exc}. "
                     "Check TASK2_DB_HOST/PORT/USER/PASSWORD/NAME."

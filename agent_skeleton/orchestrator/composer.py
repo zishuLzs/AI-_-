@@ -10,6 +10,12 @@ from llm.schemas import PlannerOutput
 
 logger = logging.getLogger(__name__)
 
+_PROPOSAL_REQUIRED_SECTIONS = [
+    "基本情况", "基本假设", "养老目标", "财富需求测算",
+    "产品偏好", "资产配置", "建议",
+]
+_PROPOSAL_MIN_SECTIONS = 5  # Require at least 5 of 7 sections
+
 
 class LLMComposer:
     def __init__(self, llm_client: LLMClient | None = None) -> None:
@@ -48,7 +54,7 @@ class LLMComposer:
         try:
             return self.llm.chat(messages, temperature=0.0, max_tokens=512).strip()
         except Exception as e:
-            logger.warning("Composer failed, falling back to programmatic short answer: %s", e)
+            logger.error("Composer failed, falling back to programmatic short answer: %s", e)
             return self._fallback_short(question, plan, tool_results)
 
     def _compose_proposal(self, tool_results: dict[str, Any]) -> str:
@@ -86,7 +92,10 @@ class LLMComposer:
                 if "retirement_duration_text" in result:
                     return result["retirement_duration_text"]
                 if "gap" in result:
-                    gap = int(float(result["gap"]))
+                    try:
+                        gap = int(float(result["gap"]))
+                    except (ValueError, TypeError):
+                        return "抱歉，暂时无法回答该问题。"
                     if gap <= 0:
                         return "在当前假设下不存在资金缺口"
                     return f"{gap} 元"
@@ -98,5 +107,4 @@ class LLMComposer:
 
     @staticmethod
     def _proposal_has_required_sections(text: str) -> bool:
-        required = ["基本情况", "基本假设", "养老目标", "财富需求测算", "产品偏好", "资产配置", "建议"]
-        return sum(1 for section in required if section in text) >= 5
+        return sum(1 for s in _PROPOSAL_REQUIRED_SECTIONS if s in text) >= _PROPOSAL_MIN_SECTIONS

@@ -16,7 +16,7 @@ def interactive_main() -> None:
     args = parser.parse_args()
 
     print("Pension Planning Agent 已启动，输入 quit 退出。")
-    print(f"Session ID: {args.session - id}")
+    print(f"Session ID: {args.session_id}")
     while True:
         question = input(">>> ").strip()
         if question.lower() in {"quit", "exit"}:
@@ -24,7 +24,9 @@ def interactive_main() -> None:
         try:
             print(run(question))
         except Exception as exc:
+            import traceback
             print(f"[ERROR] {exc}")
+            traceback.print_exc()
 
 
 if __name__ == "__main__":

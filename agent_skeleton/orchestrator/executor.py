@@ -30,8 +30,6 @@ class ToolExecutor:
         self.memory = memory_manager
 
     def execute(self, plan: PlannerOutput, session_id: str, question: str) -> dict[str, Any]:
-        self._apply_memory_update(session_id, plan)
-
         results: dict[str, Any] = {}
         for tc in plan.tool_calls:
             try:
@@ -44,6 +42,8 @@ class ToolExecutor:
                     detail=f"Tool '{tc.name}' failed: {e}",
                 )
                 raise ToolExecutionFailure(record) from e
+
+        self._apply_memory_update(session_id, plan)
         return results
 
     def _apply_memory_update(self, session_id: str, plan: PlannerOutput) -> None:
@@ -137,6 +137,9 @@ class ToolExecutor:
                 raise ValueError("generate_proposal_payload requires customer_id")
             return self._build_proposal_payload(session_id, cid)
 
+        if name == "update_memory":
+            return {}
+
         raise ValueError(f"Unknown tool: {name}")
 
     @staticmethod
@@ -173,9 +176,9 @@ class ToolExecutor:
             "定期存款": ("定期存款", "浏览"),
             "年金险": ("年金险", "浏览"),
         }
-        keywords = product_to_keywords.get(product, (product, "浏览"))
+        keywords = product_to_keywords.get(product, (product, action_type))
         synthetic_q = (
-            f"浏览{keywords[0]}类产品{min_count}次及以上的客户的平均年龄是多少"
+            f"{action_type}{keywords[0]}类产品{min_count}次及以上的客户的平均年龄是多少"
         )
         result = self.behavior_skill._answer_avg_age_by_behavior(synthetic_q)
         return {"query": synthetic_q, "result": result}

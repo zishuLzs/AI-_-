@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP, getcontext
+from decimal import Decimal, ROUND_HALF_UP
 import math
 
 from config.settings import AppConfig
 from models import CustomerProfile, RetirementResult
 
-
-getcontext().prec = 28
+# Use local decimal context to avoid mutating global precision.
+# Python's default is already 28, so this is a no-op safety measure.
 
 
 def round_money(value: Decimal) -> Decimal:

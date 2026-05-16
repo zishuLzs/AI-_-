@@ -6,14 +6,13 @@ import re
 from typing import Any
 
 from tools.sql_executor import SQLExecutor
-from tools.sql_templates import SQLTemplates
 
 
 _EQUITY_KEYWORDS = ("权益", "R4", "R5")
 _BOND_KEYWORDS = ("短债", "R2")
 _FIXED_INCOME_KEYWORDS = ("固收", "R3")
-_CASH_KEYWORDS = ("现金理财", "现金")
-_DEPOSIT_KEYWORDS = ("定期存款", "定期")
+_CASH_KEYWORDS = ("现金理财",)
+_DEPOSIT_KEYWORDS = ("定期存款",)
 _ANNUITY_KEYWORDS = ("年金险", "年金")
 
 # Standard action types for browsing

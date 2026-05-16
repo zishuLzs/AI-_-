@@ -21,7 +21,9 @@ import threading
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger(__name__)
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_proj_root = os.path.dirname(os.path.abspath(__file__))
+if _proj_root not in sys.path:
+    sys.path.insert(0, _proj_root)
 
 from config.settings import DEFAULT_CONFIG
 from llm.client import LLMClient
@@ -108,8 +110,8 @@ class PensionPlanningAgent:
         except ToolExecutionFailure as e:
             logger.error("Tool execution failure: %s", e.record.detail)
             return format_user_failure(e.record.category)
-        except Exception as e:
-            logger.error("Unexpected error in tool execution: %s", e)
+        except Exception:
+            logger.exception("Unexpected error in tool execution")
             return format_user_failure(FailureCategory.TOOL_EXECUTION_ERROR)
 
         # Step 3: Handle context-only (no tool results)
@@ -124,8 +126,8 @@ class PensionPlanningAgent:
         # Step 5: LLM Composer — generate final answer
         try:
             result = self.composer.compose(question, plan, tool_results)
-        except Exception as e:
-            logger.warning("Composer failed: %s — falling back to programmatic short answer", e)
+        except Exception:
+            logger.exception("Composer failed — falling back to programmatic short answer")
             result = self.composer._fallback_short(question, plan, tool_results)
         finally:
             self.memory_manager.clear_scenario(session_id)

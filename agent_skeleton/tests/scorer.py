@@ -8,7 +8,6 @@ Usage: python3 tests/scorer.py [--verbose]
 
 from __future__ import annotations
 
-import ast
 import os
 import re
 import subprocess
