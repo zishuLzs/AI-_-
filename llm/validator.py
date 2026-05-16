@@ -133,11 +133,32 @@ class PlanValidator:
     @staticmethod
     def _validate_tool_params(name: str, params: dict[str, Any]) -> None:
         if name in ("get_profile", "analyze_behavior_single", "calculate_retirement",
-                     "build_allocation", "generate_proposal_payload"):
+                     "build_allocation", "generate_proposal_payload", "product_query"):
             if "customer_id" in params and not isinstance(params["customer_id"], str):
                 raise PlanValidationError(
                     "planner_invalid_tool",
                     f"{name}: customer_id must be string",
+                )
+        if name == "product_query":
+            product = params.get("product", "")
+            if product and product not in VALID_PRODUCTS:
+                raise PlanValidationError(
+                    "planner_invalid_tool",
+                    f"product_query: invalid product '{product}'",
+                )
+
+        if name == "profile_query":
+            field = params.get("field")
+            if field is not None and not isinstance(field, str):
+                raise PlanValidationError(
+                    "planner_invalid_tool",
+                    "profile_query: field must be string",
+                )
+            agg = params.get("agg")
+            if agg is not None and not isinstance(agg, str):
+                raise PlanValidationError(
+                    "planner_invalid_tool",
+                    "profile_query: agg must be string",
                 )
 
         if name == "analyze_behavior_aggregate":
@@ -158,4 +179,32 @@ class PlanValidator:
                 raise PlanValidationError(
                     "planner_invalid_tool",
                     f"analyze_behavior_aggregate: invalid action_type '{action_type}'",
+                )
+
+        if name == "behavior_query":
+            product = params.get("product", "")
+            if product and product not in VALID_PRODUCTS:
+                raise PlanValidationError(
+                    "planner_invalid_tool",
+                    f"behavior_query: invalid product '{product}'",
+                )
+            action_type = params.get("action_type", "")
+            if action_type and action_type not in VALID_ACTION_TYPES:
+                raise PlanValidationError(
+                    "planner_invalid_tool",
+                    f"behavior_query: invalid action_type '{action_type}'",
+                )
+
+        if name == "retirement_query":
+            metric = params.get("metric")
+            agg = params.get("agg")
+            if metric is not None and not isinstance(metric, str):
+                raise PlanValidationError(
+                    "planner_invalid_tool",
+                    "retirement_query: metric must be string",
+                )
+            if agg is not None and not isinstance(agg, str):
+                raise PlanValidationError(
+                    "planner_invalid_tool",
+                    "retirement_query: agg must be string",
                 )

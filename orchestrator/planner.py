@@ -9,7 +9,9 @@ from llm.prompts import PLANNER_SYSTEM_PROMPT
 from llm.schemas import PlannerOutput
 from llm.validator import PlanValidator, PlanValidationError
 from orchestrator.failures import FailureCategory, FailureRecord
+from orchestrator.local_planner import LocalPlanner
 from tools.memory_manager import MemoryManager
+from tools.router import IntentRouter
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,7 @@ class LLMPlanner:
     ) -> None:
         self.llm = llm_client
         self.memory = memory_manager
+        self.local_planner = LocalPlanner(IntentRouter(memory_manager))
 
     def plan(self, question: str, session_id: str) -> PlannerOutput:
         session_summary = self._build_session_summary(session_id)
@@ -66,7 +69,15 @@ class LLMPlanner:
                     session_summary,
                 )
 
-        if plan.intent in ("retirement", "allocation", "proposal", "behavior") and not plan.customer_id:
+        aggregate_safe_tools = {"profile_query", "behavior_query", "retirement_query"}
+        needs_customer = (
+            plan.intent in ("allocation", "proposal")
+            or (
+                plan.intent in ("retirement", "behavior")
+                and not any(tc.name in aggregate_safe_tools for tc in plan.tool_calls)
+            )
+        )
+        if needs_customer and not plan.customer_id:
             state = self.memory.get_session(session_id)
             if state.customer_id:
                 plan.customer_id = state.customer_id
@@ -79,7 +90,7 @@ class LLMPlanner:
                     session_summary,
                 )
 
-        return plan
+        return self.local_planner.merge_with_llm_plan(plan, question, session_id)
 
     def _repair(self, previous_output: str, error_detail: str) -> str:
         repair_prompt = (

@@ -1,0 +1,4 @@
+	user_id	top_product	top_product_count	equity_view_count	total_behavior_count	cnt_现金理财	cnt_定期存款	cnt_短债类产品	cnt_固收+产品	cnt_权益类产品	cnt_年金险	cnt_其他	action_购买	action_赎回	action_浏览详情	action_浏览持仓	action_收藏
+1	V500001	现金理财	9	5	17	9	0	2	0	5	0	1	0	0	16	0	1
+2	V500002	固收+产品	30	21	92	3	0	30	30	24	0	5	2	0	88	1	1
+3	V500003	定期存款	8	0	18	4	8	1	0	0	0	5	3	0	15	0	0

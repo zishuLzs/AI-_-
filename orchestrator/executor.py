@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 import logging
 from typing import Any
 
@@ -80,6 +81,9 @@ class ToolExecutor:
                 "enterprise_ann": str(profile.enterprise_ann),
             }
 
+        if name == "profile_query":
+            return self.profile_skill.query(params)
+
         if name == "count_customers":
             synthetic_q = self._build_count_question(params)
             return self.profile_skill._answer_count_question(synthetic_q)
@@ -93,6 +97,9 @@ class ToolExecutor:
             if not cid:
                 raise ValueError("analyze_behavior_single requires customer_id")
             return self.behavior_skill.analyze(cid)
+
+        if name == "behavior_query":
+            return self.behavior_skill.query(params)
 
         if name == "analyze_behavior_aggregate":
             return self._execute_behavior_aggregate(params)
@@ -112,6 +119,9 @@ class ToolExecutor:
                 "accumulated_asset_at_retirement": str(result.accumulated_asset_at_retirement),
                 "gap": str(result.gap),
             }
+
+        if name == "retirement_query":
+            return self._execute_retirement_query(session_id, params)
 
         if name == "build_allocation":
             cid = params.get("customer_id", "") or self.memory.get_session(session_id).customer_id
@@ -138,6 +148,12 @@ class ToolExecutor:
                 ),
             }
 
+        if name == "product_query":
+            cid = params.get("customer_id", "") or self.memory.get_session(session_id).customer_id
+            if not cid:
+                raise ValueError("product_query requires customer_id")
+            return self._execute_product_query(session_id, cid, params)
+
         if name == "generate_proposal_payload":
             cid = params.get("customer_id", "") or self.memory.get_session(session_id).customer_id
             if not cid:
@@ -148,6 +164,190 @@ class ToolExecutor:
             return {}
 
         raise ValueError(f"Unknown tool: {name}")
+
+    def _execute_retirement_query(
+        self,
+        session_id: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        metric = str(params.get("metric", "gap"))
+        agg = str(params.get("agg", "value"))
+        cid = params.get("customer_id") or self.memory.get_session(session_id).customer_id
+
+        if cid:
+            result = self.retirement_skill.calculate(session_id, str(cid))
+            if metric == "gap":
+                if result.gap <= 0:
+                    return {"result": "在当前假设下不存在资金缺口", "value": str(result.gap)}
+                return {"result": f"{int(result.gap)} 元", "value": str(result.gap)}
+            if metric == "required_asset":
+                return {
+                    "result": f"{int(result.required_asset_at_retirement)} 元",
+                    "value": str(result.required_asset_at_retirement),
+                }
+            if metric == "accumulated_asset":
+                return {
+                    "result": f"{int(result.accumulated_asset_at_retirement)} 元",
+                    "value": str(result.accumulated_asset_at_retirement),
+                }
+            if metric == "monthly_spend":
+                return {
+                    "result": f"{int(result.retirement_monthly_expend)} 元",
+                    "value": str(result.retirement_monthly_expend),
+                }
+            if metric == "duration":
+                return {"result": result.retirement_duration_text, "value": result.retirement_duration_text}
+            raise ValueError(f"Unsupported retirement metric: {metric}")
+
+        state = self.memory.get_session(session_id)
+        totals: list[tuple[str, Any]] = []
+        for profile in self.profile_skill.list_profiles():
+            cohort_result = self.retirement_skill.formula_engine.calculate(
+                profile,
+                {},
+                state.scenario,
+            )
+            totals.append((profile.user_id, cohort_result))
+
+        if agg == "sum":
+            if metric == "required_asset":
+                total = sum(
+                    Decimal(str(result.required_asset_at_retirement))
+                    for _, result in totals
+                )
+            elif metric == "accumulated_asset":
+                total = sum(
+                    Decimal(str(result.accumulated_asset_at_retirement))
+                    for _, result in totals
+                )
+            else:
+                raise ValueError(f"Unsupported retirement sum metric: {metric}")
+            total_int = int(total.quantize(Decimal("1")))
+            return {"result": f"{total_int} 元", "value": str(total_int)}
+
+        if agg == "max_customer_id" and metric == "gap":
+            winner = max(
+                totals,
+                key=lambda item: (
+                    Decimal(str(item[1].gap)),
+                    item[0],
+                ),
+            )
+            return {"result": winner[0], "customer_id": winner[0], "value": str(winner[1].gap)}
+
+        if agg == "list_customer_ids" and metric == "no_gap":
+            customer_ids = [
+                user_id
+                for user_id, result in totals
+                if Decimal(str(result.gap)) <= 0
+            ]
+            return {"result": "、".join(customer_ids), "customer_ids": customer_ids}
+
+        raise ValueError(f"Unsupported retirement aggregate: agg={agg}, metric={metric}")
+
+    def _execute_product_query(
+        self,
+        session_id: str,
+        customer_id: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        mode = str(params.get("mode", "feasibility"))
+        product = params.get("product")
+        projections = self.allocation_skill.product_projections(session_id, customer_id)
+        projection_map = {
+            str(item["product"]): item
+            for item in projections
+            if isinstance(item, dict) and item.get("product")
+        }
+        retirement = self.retirement_skill.calculate(session_id, customer_id)
+        required = int(retirement.required_asset_at_retirement)
+
+        if mode == "lowest_covering_product":
+            eligible = [item for item in projections if item.get("covers_gap")]
+            if not eligible:
+                return {"result": "不存在可覆盖养老缺口的单一产品。"}
+            winner = min(
+                eligible,
+                key=lambda item: (
+                    float(item["annual_return"]),
+                    int(item.get("risk_score", 99)),
+                    str(item["product"]),
+                ),
+            )
+            return {"result": self._display_product(str(winner["product"]))}
+
+        if mode == "max_projection_product":
+            winner = max(
+                projections,
+                key=lambda item: (
+                    int(item["retirement_asset_projection"]),
+                    str(item["product"]),
+                ),
+            )
+            return {"result": self._display_product(str(winner["product"]))}
+
+        if not product or str(product) not in projection_map:
+            raise ValueError(f"Unknown product for product_query: {product}")
+
+        projection = projection_map[str(product)]
+        product_display = self._display_product(str(product))
+        projected = int(projection["retirement_asset_projection"])
+        shortfall = max(required - projected, 0)
+
+        if mode == "shortfall":
+            if shortfall <= 0:
+                return {"result": "在当前假设下不存在资金缺口", "value": "0"}
+            return {"result": f"{shortfall} 元", "value": str(shortfall)}
+
+        if mode == "adjustment":
+            if projected >= required:
+                return {
+                    "result": (
+                        f"能达成，全部投资{product_display}即可满足养老目标。"
+                    )
+                }
+            eligible = [item for item in projections if item.get("covers_gap")]
+            if not eligible:
+                return {"result": "当前可投产品中不存在能够覆盖养老缺口的单一产品。"}
+            recommended = min(
+                eligible,
+                key=lambda item: (
+                    float(item["annual_return"]),
+                    int(item.get("risk_score", 99)),
+                    str(item["product"]),
+                ),
+            )
+            recommended_name = self._display_product(str(recommended["product"]))
+            recommended_asset = int(recommended["retirement_asset_projection"])
+            return {
+                "result": (
+                    f"不能，需要改为投资 {recommended_name}。\n"
+                    f"全部投资{product_display}时，退休时预计积累 {projected} 元，低于所需的 {required} 元，缺口约 {shortfall} 元。\n"
+                    f"在客户当前风险承受范围内，{recommended_name} 是收益率最低但能够达标的合规产品，退休时预计可积累 {recommended_asset} 元。\n"
+                    f"建议：将{product_display}升级为 {recommended_name}。"
+                )
+            }
+
+        if mode == "feasibility":
+            if projected >= required:
+                return {
+                    "result": (
+                        f"够，全部投资{product_display}时退休时预计积累 {projected} 元，高于所需的 {required} 元。"
+                    ),
+                    "covers_gap": True,
+                }
+            return {
+                "result": (
+                    f"不够，全部投资{product_display}时退休时预计积累 {projected} 元，低于所需的 {required} 元。"
+                ),
+                "covers_gap": False,
+            }
+
+        raise ValueError(f"Unsupported product query mode: {mode}")
+
+    @staticmethod
+    def _display_product(product: str) -> str:
+        return "固收 + 产品" if product == "固收+产品" else product
 
     @staticmethod
     def _build_count_question(params: dict[str, Any]) -> str:

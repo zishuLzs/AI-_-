@@ -1,0 +1,4 @@
+	user_id	risk_level	top_product	default_gap	max_return_plan	max_return_projection	max_return_covers_gap	min_risk_plan	min_risk_projection	min_risk_covers_gap	min_risk_portfolio_return	min_risk_portfolio_risk
+1	V500001	R3	现金理财	213264	固收+产品:100%	1353849	True	固收+产品:73%；现金理财:10%；年金险:17%	988310	True	0.036775	3.36
+2	V500002	R5	固收+产品	-2143470	权益类产品:100%	4969807	True	现金理财:19%；年金险:81%	455456	True	0.02310	1.81
+3	V500003	R1	定期存款	-1076458	年金险:100%	1723711	True	现金理财:36%；年金险:64%	554310	True	0.02140	1.64

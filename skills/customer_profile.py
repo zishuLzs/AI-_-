@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal
+from statistics import median
 
 from models import CustomerProfile
 from tools.memory_manager import MemoryManager
@@ -12,6 +13,8 @@ from tools.sql_templates import SQLTemplates
 
 
 class CustomerProfileSkill:
+    _RISK_ORDER = {"R1": 1, "R2": 2, "R3": 3, "R4": 4, "R5": 5}
+
     def __init__(
         self, sql_executor: SQLExecutor, memory_manager: MemoryManager
     ) -> None:
@@ -44,6 +47,151 @@ class CustomerProfileSkill:
         )
         self.memory_manager.remember_profile(session_id, profile)
         return profile
+
+    def list_profiles(self) -> list[CustomerProfile]:
+        rows = self.sql_executor.fetch_all(
+            (
+                "SELECT User_ID, Age, Gender, Rsk_Cd, Net_Asset, Monthly_Income, "
+                "Monthly_Expend, Pension, Enterprise_Ann "
+                f"FROM {self.sql_executor.base_table}"
+            )
+        )
+        return [
+            CustomerProfile(
+                user_id=str(row["User_ID"]),
+                age=int(row["Age"]),
+                gender=str(row["Gender"]),
+                risk_level=str(row["Rsk_Cd"]),
+                net_asset=Decimal(str(row["Net_Asset"] or 0)),
+                monthly_income=Decimal(str(row["Monthly_Income"] or 0)),
+                monthly_expend=Decimal(str(row["Monthly_Expend"] or 0)),
+                pension=Decimal(str(row["Pension"] or 0)),
+                enterprise_ann=Decimal(str(row["Enterprise_Ann"] or 0)),
+            )
+            for row in rows
+        ]
+
+    @classmethod
+    def _field_value(cls, profile: CustomerProfile, field: str) -> Decimal | int | str:
+        if field == "age":
+            return profile.age
+        if field == "net_asset":
+            return profile.net_asset
+        if field == "monthly_income":
+            return profile.monthly_income
+        if field == "monthly_expend":
+            return profile.monthly_expend
+        if field == "monthly_saving":
+            return profile.monthly_saving
+        if field == "pension":
+            return profile.pension
+        if field == "enterprise_ann":
+            return profile.enterprise_ann
+        if field == "risk_level":
+            return profile.risk_level
+        raise ValueError(f"Unsupported profile field: {field}")
+
+    @classmethod
+    def _compare(
+        cls,
+        left: Decimal | int | str,
+        operator: str,
+        right: Decimal | int | str,
+    ) -> bool:
+        if isinstance(left, str) or isinstance(right, str):
+            left_val = cls._RISK_ORDER.get(str(left), -1)
+            right_val = cls._RISK_ORDER.get(str(right), -1)
+        else:
+            left_val = Decimal(str(left))
+            right_val = Decimal(str(right))
+
+        if operator == ">=":
+            return left_val >= right_val
+        if operator == ">":
+            return left_val > right_val
+        if operator == "<=":
+            return left_val <= right_val
+        if operator == "<":
+            return left_val < right_val
+        if operator == "==":
+            return left_val == right_val
+        raise ValueError(f"Unsupported operator: {operator}")
+
+    @staticmethod
+    def _format_result(field: str, agg: str, value: Decimal | int | str) -> str:
+        if agg == "argmax_customer":
+            return str(value)
+        if agg == "median" and field == "age":
+            return f"{int(value)} 岁"
+        if agg == "count":
+            return f"{int(value)} 个"
+        if field == "age":
+            return f"{int(value)} 岁"
+        return f"{Decimal(str(value)).quantize(Decimal('1'))} 元"
+
+    def query(self, params: dict[str, object]) -> dict[str, object]:
+        profiles = self.list_profiles()
+        field = str(params.get("field", "age"))
+        agg = str(params.get("agg", "count"))
+        operator = str(params.get("operator", ""))
+        value = params.get("value")
+        compare_field = params.get("compare_field")
+
+        filtered = profiles
+        if operator:
+            if compare_field:
+                filtered = [
+                    profile
+                    for profile in profiles
+                    if self._compare(
+                        self._field_value(profile, field),
+                        operator,
+                        self._field_value(profile, str(compare_field)),
+                    )
+                ]
+            elif value is not None:
+                filtered = [
+                    profile
+                    for profile in profiles
+                    if self._compare(self._field_value(profile, field), operator, value)
+                ]
+
+        if agg == "count":
+            result = len(filtered)
+            return {"result": self._format_result(field, agg, result), "value": result}
+
+        if agg == "avg":
+            values = [Decimal(str(self._field_value(profile, field))) for profile in filtered]
+            avg_value = (sum(values) / Decimal(len(values))) if values else Decimal("0")
+            rounded = int(avg_value.quantize(Decimal("1")))
+            return {
+                "result": self._format_result(field, agg, rounded),
+                "value": rounded,
+            }
+
+        if agg == "median":
+            values = [Decimal(str(self._field_value(profile, field))) for profile in filtered]
+            if not values:
+                return {"result": self._format_result(field, agg, 0), "value": 0}
+            median_value = int(Decimal(str(median(values))).quantize(Decimal("1")))
+            return {
+                "result": self._format_result(field, agg, median_value),
+                "value": median_value,
+            }
+
+        if agg == "argmax_customer":
+            if not filtered:
+                return {"result": "未找到符合条件的客户。"}
+            winner = max(
+                filtered,
+                key=lambda profile: (
+                    Decimal(str(self._field_value(profile, field))),
+                    profile.user_id,
+                ),
+            )
+            return {"result": winner.user_id, "customer_id": winner.user_id}
+
+        raise ValueError(f"Unsupported profile aggregate: {agg}")
 
     def answer_profile_question(
         self,

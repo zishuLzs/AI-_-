@@ -92,17 +92,26 @@ class LLMComposer:
         style_map = {
             "profile_single_value": "只输出最终值，例如“22 岁”“5000 元”“R3”。",
             "profile_count": "只输出计数结果，例如“2 个”。",
+            "profile_aggregate_value": "只输出聚合后的最终结果，例如“5667 元”“36 岁”。",
+            "profile_ranking": "只输出客户编号，例如“V500002”。",
             "behavior_single_preference": "只输出产品名称，例如“现金理财”。",
             "behavior_aggregate_stat": "只输出最终统计值，例如“29 岁”。",
+            "behavior_stat": "只输出最终统计值，例如“21 次”“2 个”“43 岁”。",
+            "behavior_ranking": "只输出客户编号，例如“V500003”。",
             "retirement_duration": "只输出时长，例如“12 年 7 个月”。",
             "retirement_monthly_spend": "只输出金额，例如“9076 元”。",
             "retirement_required_asset": "只输出金额，例如“985979 元”。",
             "retirement_accumulated_asset": "只输出金额，例如“772715 元”。",
+            "retirement_gap": "只输出缺口结论，例如“213264 元”或“不存在资金缺口”。",
+            "retirement_aggregate": "只输出聚合后的最终结果，例如“1982725 元”或客户编号列表。",
+            "retirement_ranking": "只输出客户编号，例如“V500001”。",
             "allocation_prediction": "只输出最可能的产品名称。",
             "allocation_longevity_adjust": "只输出最应该增加配置的产品名称。",
             "allocation_goal_check": "先给出能否达成及调整结论，再用简短说明给出缺口和替代产品。",
             "allocation_max_return": "先给出最优配置结论，再用一句解释为什么。",
             "allocation_min_risk": "先给出比例方案，再用2到4句说明主力产品、最低比例和剩余比例用途。",
+            "allocation_metric": "只输出目标方案下的单一指标结果，例如“2.31%”“1.64”“988310 元”。",
+            "product_query": "只输出单产品分析的最终结论，必要时附简短说明。",
             "retirement_scenario_inflation": "第一行给最终金额，随后用极简步骤说明分段通胀和缺口测算。",
         }
         return style_map.get(case_tag, "只基于结构化数据给出简洁答案。")
@@ -149,6 +158,21 @@ class LLMComposer:
             for result in tool_results.values():
                 if isinstance(result, str) and result:
                     return result
+
+        if case_tag in {
+            "profile_aggregate_value",
+            "profile_ranking",
+            "behavior_stat",
+            "behavior_ranking",
+            "retirement_gap",
+            "retirement_aggregate",
+            "retirement_ranking",
+            "product_query",
+        }:
+            for name in ("profile_query", "behavior_query", "retirement_query", "product_query"):
+                result = tool_results.get(name, {})
+                if isinstance(result, dict) and result.get("result"):
+                    return str(result["result"])
 
         if case_tag == "behavior_single_preference" and behavior.get("top_product"):
             return str(behavior["top_product"])
@@ -207,44 +231,25 @@ class LLMComposer:
                 return "；".join(parts) + "\n" + detail
 
         if case_tag == "allocation_goal_check":
-            projections = allocation.get("product_projections", [])
-            projection_map = {
-                str(item["product"]): item
-                for item in projections
-                if isinstance(item, dict) and item.get("product")
-            }
-            deposit = projection_map.get("定期存款")
-            if deposit and retirement:
-                required = int(retirement["required_asset_at_retirement"])
-                deposit_asset = int(deposit["retirement_asset_projection"])
-                if deposit_asset < required:
-                    shortfall = required - deposit_asset
-                    eligible = [
-                        item
-                        for item in projections
-                        if item.get("covers_gap")
-                    ]
-                    recommended = None
-                    if eligible:
-                        recommended = min(
-                            eligible,
-                            key=lambda item: (
-                                float(item["annual_return"]),
-                                int(item.get("risk_score", 99)),
-                            ),
-                        )
-                    if recommended:
-                        recommended_name = self._display_product(str(recommended["product"]))
-                        recommended_asset = int(recommended["retirement_asset_projection"])
-                        return (
-                            f"不能，需要改为投资 {recommended_name}。\n"
-                            f"全部投资定期存款时，退休时预计积累 {deposit_asset} 元，低于所需的 {required} 元，缺口约 {shortfall} 元。\n"
-                            f"在客户当前风险承受范围内，{recommended_name} 是收益率最低但能够达标的合规产品，退休时预计可积累 {recommended_asset} 元。\n"
-                            f"建议：将定期存款升级为 {recommended_name}。"
-                        )
-                return "能达成，全部投资定期存款即可满足养老目标。"
+            product_query = tool_results.get("product_query", {})
+            if isinstance(product_query, dict) and product_query.get("result"):
+                return str(product_query["result"])
+
+        if case_tag == "allocation_metric":
+            if "预期年化收益率" in question and allocation.get("portfolio_return") is not None:
+                return f"{float(allocation['portfolio_return']) * 100:.2f}%"
+            if "风险分数" in question and allocation.get("portfolio_risk") is not None:
+                return f"{float(allocation['portfolio_risk']):.2f}"
+            if (
+                "预计可积攒多少钱" in question
+                and allocation.get("retirement_asset_projection") is not None
+            ):
+                return f"{allocation['retirement_asset_projection']} 元"
 
         if case_tag == "retirement_scenario_inflation" and retirement:
+            retirement_query = tool_results.get("retirement_query", {})
+            if isinstance(retirement_query, dict) and retirement_query.get("result"):
+                return str(retirement_query["result"])
             amount = f"{retirement['required_asset_at_retirement']} 元"
             years, rate = self._extract_inflation_override(question)
             if years is not None and rate is not None:
