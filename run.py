@@ -145,6 +145,15 @@ class PensionPlanningAgent:
 
     @staticmethod
     def _apply_question_overrides(plan: "PlannerOutput", question: str) -> None:
+        direct_inflation = re.search(
+            r"通胀(?:率)?[^0-9]*(?:提升到|升到|按|算为|变为|提高到)?\s*(\d+(?:\.\d+)?)\s*%",
+            question,
+        )
+        if direct_inflation and "年后" not in question:
+            plan.memory_update.scenario["inflation_annual"] = str(
+                float(direct_inflation.group(1)) / 100
+            )
+
         if plan.case_tag == "retirement_scenario_inflation":
             match = re.search(
                 r"(\d+)\s*年后.*?通胀率.*?(?:提升到|升到|变为|提高到)\s*(\d+(?:\.\d+)?)\s*%",
@@ -158,6 +167,32 @@ class PensionPlanningAgent:
                 )
                 plan.memory_update.scenario["inflation_after_years"] = years
                 plan.memory_update.scenario["inflation_after_years_annual"] = annual
+
+        saving_match = re.search(
+            r"每月(?:(?:再)?(?:多存|多攒|多储蓄)|额外(?:储蓄|多存|多攒))\s*([0-9]+(?:\.[0-9]+)?)\s*(万)?\s*元?",
+            question,
+        )
+        if saving_match:
+            saving = float(saving_match.group(1))
+            if saving_match.group(2):
+                saving *= 10000
+            plan.memory_update.scenario["extra_monthly_saving"] = int(round(saving))
+
+        if "retirement_goal_monthly_expend" not in plan.memory_update.preferences and "retirement_goal_monthly_expend" not in plan.memory_update.scenario:
+            spend_match = re.search(
+                r"(?:退休后)?每月(?:生活费|想要|希望|需要支出|花)\s*([0-9]+(?:\.[0-9]+)?)\s*(万)?\s*元?",
+                question,
+            )
+            if spend_match:
+                spend = float(spend_match.group(1))
+                if spend_match.group(2):
+                    spend *= 10000
+                target = (
+                    plan.memory_update.scenario
+                    if any(token in question for token in ("如果", "假如", "假设", "设想", "要是"))
+                    else plan.memory_update.preferences
+                )
+                target["retirement_goal_monthly_expend"] = int(round(spend))
 
 
 def run(inf: str) -> str:

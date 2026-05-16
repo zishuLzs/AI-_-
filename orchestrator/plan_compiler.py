@@ -97,22 +97,25 @@ class PlanCompiler:
 
     def _build_tool_calls(self, plan: SemanticPlan, question: str) -> list[ToolCall]:
         intent = self._resolve_intent(plan)
-        metric = plan.query_semantics.metric
 
         if intent == "profile":
-            return self._build_profile_tools(plan)
+            return self._build_profile_tools(plan, question)
         if intent == "behavior":
-            return self._build_behavior_tools(plan)
+            return self._build_behavior_tools(plan, question)
         if intent == "retirement":
-            return self._build_retirement_tools(plan)
+            return self._build_retirement_tools(plan, question)
         if intent == "allocation":
             return self._build_allocation_tools(plan, question)
         if intent == "proposal":
             return [ToolCall(name="generate_proposal_payload", params=self._customer_param(plan.customer_scope))]
         return []
 
-    def _build_profile_tools(self, plan: SemanticPlan) -> list[ToolCall]:
+    def _build_profile_tools(self, plan: SemanticPlan, question: str) -> list[ToolCall]:
         q = plan.query_semantics
+        if self._is_profile_count_question(question):
+            params = {"field": q.metric or "age", "agg": "count"}
+            params.update(self._profile_filter_params(q))
+            return [ToolCall(name="profile_query", params=params)]
         if plan.customer_scope.type in {"single", "followup"} and q.aggregation == "value":
             return [ToolCall(name="get_profile", params=self._customer_param(plan.customer_scope))]
 
@@ -120,23 +123,48 @@ class PlanCompiler:
         params.update(self._profile_filter_params(q))
         return [ToolCall(name="profile_query", params=params)]
 
-    def _build_behavior_tools(self, plan: SemanticPlan) -> list[ToolCall]:
+    def _build_behavior_tools(self, plan: SemanticPlan, question: str) -> list[ToolCall]:
         q = plan.query_semantics
         if q.metric == "top_product" and plan.customer_scope.type in {"single", "followup"}:
             return [ToolCall(name="analyze_behavior_single", params=self._customer_param(plan.customer_scope))]
 
+        normalized_metric = q.metric
+        if "平均年龄" in question:
+            normalized_metric = "avg_age"
+        elif "谁的" in question:
+            normalized_metric = "max_customer_id"
+        elif "多少客户" in question or "有多少个" in question:
+            normalized_metric = "customer_count"
+        elif "多少次" in question or "几次" in question:
+            normalized_metric = "action_count"
+
+        normalized_query = QuerySemantics(
+            metric=normalized_metric,
+            aggregation=q.aggregation,
+            filters=q.filters,
+            comparison=q.comparison,
+        )
         params: dict[str, Any] = {
-            "agg": self._behavior_agg(q, plan.customer_scope),
-            "action_type": self._behavior_action_type(q),
-            "product": self._behavior_product(q),
-            "min_count": self._behavior_min_count(q),
+            "agg": self._behavior_agg(normalized_query, plan.customer_scope),
+            "action_type": self._behavior_action_type(normalized_query),
+            "product": self._behavior_product(normalized_query),
+            "min_count": self._behavior_min_count(normalized_query),
         }
         if plan.customer_scope.customer_id and params["agg"] == "customer_action_count":
             params["customer_id"] = plan.customer_scope.customer_id
         return [ToolCall(name="behavior_query", params=params)]
 
-    def _build_retirement_tools(self, plan: SemanticPlan) -> list[ToolCall]:
+    def _build_retirement_tools(self, plan: SemanticPlan, question: str) -> list[ToolCall]:
         q = plan.query_semantics
+        if any(token in question for token in ("不存在养老金缺口", "没有养老金缺口", "没有养老资金缺口", "无缺口")):
+            return [ToolCall(name="retirement_query", params={"metric": "no_gap", "agg": "list_customer_ids"})]
+        if "缺口最大" in question:
+            return [ToolCall(name="retirement_query", params={"metric": "gap", "agg": "max_customer_id"})]
+        if "总共" in question and ("最低需要积攒" in question or "最低总共需要积攒" in question or "至少要准备" in question):
+            return [ToolCall(name="retirement_query", params={"metric": "required_asset", "agg": "sum"})]
+        if "总共" in question and ("预计总共可以积攒" in question or "总共能积攒" in question):
+            return [ToolCall(name="retirement_query", params={"metric": "accumulated_asset", "agg": "sum"})]
+
         if q.aggregation in {"sum", "list_customer_ids", "argmax_customer"}:
             params: dict[str, Any] = {
                 "metric": q.metric,
@@ -156,7 +184,11 @@ class PlanCompiler:
 
     def _build_allocation_tools(self, plan: SemanticPlan, question: str) -> list[ToolCall]:
         metric = plan.query_semantics.metric
+        if self._is_explicit_product_query(question):
+            return [self._build_product_query_tool(plan, question)]
         if metric in {"prediction", "longevity_adjust"}:
+            return [ToolCall(name="analyze_behavior_single", params=self._customer_param(plan.customer_scope))]
+        if any(token in question for token in ("寿命", "长寿")) and any(token in question for token in ("补哪类产品", "增加什么产品", "增加什么配置")):
             return [ToolCall(name="analyze_behavior_single", params=self._customer_param(plan.customer_scope))]
 
         if metric in {"shortfall", "lowest_covering_product", "max_projection_product"}:
@@ -285,3 +317,14 @@ class PlanCompiler:
         if scope.customer_id:
             return {"customer_id": scope.customer_id}
         return {}
+
+    @staticmethod
+    def _is_profile_count_question(question: str) -> bool:
+        return any(token in question for token in ("多少客户", "有几个", "一共有几个", "有多少个"))
+
+    @staticmethod
+    def _is_explicit_product_query(question: str) -> bool:
+        return (
+            any(token in question for token in ("全投", "全买", "只投", "全部投资"))
+            and any(token in question for token in ("够不够", "能否达成", "目标够不够", "还差多少钱"))
+        ) or "收益率最低但能够覆盖养老缺口" in question or "哪种单一产品攒得最多" in question

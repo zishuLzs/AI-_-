@@ -61,7 +61,7 @@ class LocalPlanner:
     def _infer_scope(question: str, customer_id: str | None) -> str:
         if customer_id and any(token in question for token in ("他", "她", "该客户", "这位客户", "那他", "那她")):
             return "followup"
-        if any(token in question for token in ("这3位客户", "所有客户", "样本里", "我有多少客户", "哪几位客户")):
+        if any(token in question for token in ("这3位客户", "所有客户", "样本里", "样本客户里", "我有多少客户", "哪几位客户")):
             return "cohort"
         return "single" if customer_id else "cohort"
 
@@ -120,7 +120,7 @@ class LocalPlanner:
 
     @staticmethod
     def _extract_money_amount(question: str) -> int | None:
-        match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(万)?\s*元", question)
+        match = re.search(r"(?<![A-Za-z0-9])([0-9]+(?:\.[0-9]+)?)\s*(万)?\s*元", question)
         if not match:
             return None
         value = float(match.group(1))
@@ -218,7 +218,7 @@ class LocalPlanner:
         product = self._resolve_product(question)
         min_count = self._behavior_min_count(question)
 
-        if customer_id and ("多少次" in question or "几次" in question or "发生过" in question):
+        if customer_id and ("多少次" in question or "几次" in question):
             return QuerySemantics(
                 metric="action_count",
                 aggregation="value",
@@ -271,7 +271,7 @@ class LocalPlanner:
             return QuerySemantics(metric="gap", aggregation="list_customer_ids")
         if "缺口最大" in question:
             return QuerySemantics(metric="gap", aggregation="argmax_customer")
-        if "总共" in question and ("最低需要积攒" in question or "至少要准备" in question):
+        if "总共" in question and ("最低需要积攒" in question or "最低总共需要积攒" in question or "至少要准备" in question):
             return QuerySemantics(metric="required_asset", aggregation="sum")
         if "总共" in question and ("预计总共可以积攒" in question or "总共能积攒" in question):
             return QuerySemantics(metric="accumulated_asset", aggregation="sum")

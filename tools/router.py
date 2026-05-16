@@ -53,10 +53,11 @@ class IntentRouter:
         self.memory_manager = memory_manager
 
     def route(self, question: str, session_id: str) -> RouteResult:
-        customer_id = (
-            self._extract_customer_id(question)
-            or self.memory_manager.get_session(session_id).customer_id
-        )
+        explicit_customer_id = self._extract_customer_id(question)
+        state_customer_id = self.memory_manager.get_session(session_id).customer_id
+        customer_id = explicit_customer_id
+        if customer_id is None and self._is_followup_reference(question):
+            customer_id = state_customer_id
         preferences, scenario = self._extract_params(question)
         intent = self._classify(question)
         return RouteResult(
@@ -72,8 +73,15 @@ class IntentRouter:
         return match.group(0).upper() if match else None
 
     @staticmethod
+    def _is_followup_reference(question: str) -> bool:
+        return any(
+            token in question
+            for token in ("他", "她", "那他", "那她", "这位客户", "该客户", "ta")
+        )
+
+    @staticmethod
     def _extract_money_value(text: str) -> Decimal | None:
-        match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(万)?\s*元", text)
+        match = re.search(r"(?<![A-Za-z0-9])([0-9]+(?:\.[0-9]+)?)\s*(万)?\s*元?", text)
         if not match:
             return None
         value = Decimal(match.group(1))
@@ -145,7 +153,12 @@ class IntentRouter:
                 "收益最大化" in clause and "风险" not in clause
             ):
                 target["allocation_objective"] = "maximize_return"
-            if "最小化风险波动" in clause or "风险最小" in clause:
+            if (
+                "最小化风险波动" in clause
+                or "风险最小" in clause
+                or "最小风险方案" in clause
+                or "尽量稳一点" in clause
+            ):
                 target["allocation_objective"] = "minimize_risk"
 
             # Focus points: only from non-hypothetical clauses

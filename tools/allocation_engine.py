@@ -339,12 +339,19 @@ class AllocationEngine:
         if preferences.get("focus_points"):
             tags.append("关注点已覆盖")
 
+        blended_projection = self._project_asset(
+            profile,
+            retirement_result.months_to_retirement,
+            portfolio_return,
+            actual_monthly_saving,
+        )
+
         return AllocationPlan(
             allocation=allocation,
             portfolio_return=portfolio_return,
             portfolio_risk=portfolio_risk,
-            retirement_asset_projection=round_money(primary_projection * primary_weight),
-            covers_gap=(primary_projection * primary_weight) >= required_asset,
+            retirement_asset_projection=round_money(blended_projection),
+            covers_gap=blended_projection >= required_asset,
             reasoning_tags=tags,
         )
 

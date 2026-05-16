@@ -203,6 +203,12 @@ class LLMComposer:
         if case_tag == "retirement_accumulated_asset" and retirement.get("accumulated_asset_at_retirement") is not None:
             return f"{retirement['accumulated_asset_at_retirement']} 元"
 
+        if case_tag == "retirement_gap" and retirement.get("gap") is not None:
+            gap_value = int(retirement["gap"])
+            if gap_value <= 0:
+                return "在当前假设下不存在资金缺口"
+            return f"{gap_value} 元"
+
         if case_tag == "allocation_prediction" and behavior.get("top_product"):
             return str(behavior["top_product"])
 
@@ -280,7 +286,10 @@ class LLMComposer:
             if isinstance(result, str) and result:
                 return result
             if isinstance(result, dict) and result.get("result"):
-                return str(result["result"])
+                text = str(result["result"])
+                if text == "不存在资金缺口":
+                    return "在当前假设下不存在资金缺口"
+                return text
 
         return llm_answer.strip()
 
