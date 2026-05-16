@@ -339,6 +339,31 @@ class TestAllocationEngine(unittest.TestCase):
         self.assertIn("固收+产品", non_zero)
         self.assertGreaterEqual(len(non_zero), 2)
 
+    def test_minimize_risk_matches_example_ratio(self) -> None:
+        engine = AllocationEngine(DEFAULT_CONFIG)
+        profile = CustomerProfile(
+            user_id="V500001",
+            age=22,
+            gender="男",
+            risk_level="R3",
+            net_asset=Decimal("5000"),
+            monthly_income=Decimal("5000"),
+            monthly_expend=Decimal("4000"),
+            pension=Decimal("5000"),
+            enterprise_ann=Decimal("0"),
+        )
+        formula = RetirementFormulaEngine(DEFAULT_CONFIG)
+        retirement = formula.calculate(profile, {"retirement_goal": "消费水平不下降"}, {})
+        plan = engine.build_plan(
+            profile,
+            retirement,
+            {"top_product": "现金理财", "counts": {"现金理财": 9}},
+            {"allocation_objective": "minimize_risk"},
+            {},
+        )
+        non_zero = [(item.product, int(item.weight * 100)) for item in plan.allocation if item.weight > 0]
+        self.assertEqual(non_zero, [("固收+产品", 73), ("现金理财", 10), ("年金险", 17)])
+
 
 if __name__ == "__main__":
     unittest.main()

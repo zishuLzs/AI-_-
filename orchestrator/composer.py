@@ -77,9 +77,12 @@ class LLMComposer:
             proposal = self.llm.chat(
                 messages, temperature=0.1, max_tokens=4096
             ).strip()
-            if not self._proposal_has_required_sections(proposal):
-                raise ValueError("Proposal missing required sections")
-            return proposal
+            if (
+                self._proposal_has_required_sections(proposal)
+                and self._proposal_matches_payload(proposal, payload)
+            ):
+                return proposal
+            return self._fallback_proposal(payload)
         except Exception as e:
             logger.error("Proposal generation failed: %s", e)
             return self._fallback_proposal(payload)
@@ -181,21 +184,24 @@ class LLMComposer:
 
         if case_tag == "allocation_min_risk":
             rows = allocation.get("allocation", [])
-            weight_map = {
-                str(item["product"]): int(round(float(item["weight"]) * 100))
-                for item in rows
-                if float(item.get("weight", "0")) > 0
-            }
-            if weight_map:
-                primary = max(weight_map.items(), key=lambda item: item[1])[0]
-                parts = []
-                for product in (primary, "现金理财", "年金险", "定期存款", "短债类产品", "权益类产品"):
-                    pct = weight_map.get(product)
-                    if pct:
-                        parts.append(f"{self._display_product(product)}配置 {pct}%")
+            non_zero_rows = [
+                item for item in rows if float(item.get("weight", "0")) > 0
+            ]
+            if non_zero_rows:
+                primary_row = max(
+                    non_zero_rows,
+                    key=lambda item: float(item.get("weight", "0")),
+                )
+                primary = str(primary_row["product"])
+                primary_pct = int(round(float(primary_row["weight"]) * 100))
+                parts = [
+                    f"{self._display_product(str(item['product']))}配置 "
+                    f"{int(round(float(item['weight']) * 100))}%"
+                    for item in non_zero_rows
+                ]
                 detail = (
                     f"主力产品为 {self._display_product(primary)}，"
-                    f"{weight_map[primary]}% 的主力仓位即可覆盖养老资金需求，"
+                    f"{primary_pct}% 的主力仓位即可覆盖养老资金需求，"
                     "剩余比例用于流动性储备和长寿风险对冲。"
                 )
                 return "；".join(parts) + "\n" + detail
@@ -263,6 +269,9 @@ class LLMComposer:
         retirement = payload.get("retirement_result", {})
         allocation_plan = payload.get("allocation_plan", {})
         guidance = payload.get("proposal_guidance", {})
+        assumptions = payload.get("assumptions", {})
+        prefs = assumptions.get("preferences", {})
+        scenario = assumptions.get("scenario", {})
 
         allocation_lines = []
         for item in allocation_plan.get("allocation", []):
@@ -280,29 +289,83 @@ class LLMComposer:
         else:
             objective_text = "兼顾养老需求、风险承受能力与流动性安排"
 
+        retirement_goal = prefs.get("retirement_goal", "退休后消费水平尽量不下降")
+        duration_text = self._space_duration(
+            str(retirement.get("retirement_duration_text", "-"))
+        )
+        conflict_notes = guidance.get("conflict_notes", [])
+        conflict_line = (
+            f"- 冲突说明：{conflict_notes[0]}"
+            if conflict_notes
+            else "- 冲突说明：当前未识别到长期观点与临时假设冲突。"
+        )
+        scenario_lines = []
+        if scenario.get("inflation_after_years") is not None and scenario.get(
+            "inflation_after_years_annual"
+        ) is not None:
+            scenario_lines.append(
+                f"- 本轮临时假设：{scenario['inflation_after_years']} 年后通胀率调整为 "
+                f"{float(scenario['inflation_after_years_annual']) * 100:.0f}% 并维持不变。"
+            )
+        elif scenario.get("inflation_annual") is not None:
+            scenario_lines.append(
+                f"- 本轮临时假设：通胀率按 {float(scenario['inflation_annual']) * 100:.0f}% 测算。"
+            )
+        if scenario.get("allocation_objective"):
+            scenario_lines.append(
+                f"- 本轮临时目标：{scenario.get('allocation_objective')}。"
+            )
+        scenario_text = "\n".join(scenario_lines) if scenario_lines else "- 本轮无额外临时假设。"
+
         return (
             f"# 客户 {profile.get('customer_id', '')} 养老规划建议书\n\n"
             f"## 基本情况\n"
-            f"客户年龄 {profile.get('age', '-') } 岁，风险评级 {profile.get('risk_level', '-') }，当前净资产 {profile.get('net_asset', '-') } 元，"
-            f"月收入 {profile.get('monthly_income', '-') } 元，月支出 {profile.get('monthly_expend', '-') } 元。\n\n"
+            f"客户 {profile.get('customer_id', '')}，{profile.get('age', '-') } 岁，"
+            f"{profile.get('gender', '-') }，风险评级 {profile.get('risk_level', '-') }。"
+            f"当前净资产 {profile.get('net_asset', '-') } 元，月收入 {profile.get('monthly_income', '-') } 元，"
+            f"月支出 {profile.get('monthly_expend', '-') } 元，月结余 {profile.get('monthly_saving', '-') } 元。\n\n"
             f"## 基本假设\n"
             f"- 系统默认通胀率 2%，默认投资回报率 2%，预期寿命 80 岁。\n"
-            f"- 当前测算以 payload 中的长期偏好与临时假设为准。\n\n"
+            f"- 当前日期 2025-03-31，退休年龄按现行延迟退休政策测算。\n"
+            f"{conflict_line}\n"
+            f"{scenario_text}\n\n"
             f"## 养老目标\n"
-            f"当前正式配置目标为：{objective_text}。\n\n"
+            f"客户当前养老目标为：{retirement_goal}。正式资产配置目标为：{objective_text}。\n\n"
             f"## 退休后财富需求测算\n"
-            f"距离退休还有 {self._space_duration(str(retirement.get('retirement_duration_text', '-')))}，"
+            f"距离退休还有 {duration_text}，"
             f"退休首月预计支出 {retirement.get('retirement_monthly_expend', '-') } 元，"
             f"退休时最低需积攒 {retirement.get('required_asset_at_retirement', '-') } 元，"
-            f"预计可积攒 {retirement.get('accumulated_asset_at_retirement', '-') } 元。\n\n"
+            f"预计可积攒 {retirement.get('accumulated_asset_at_retirement', '-') } 元，"
+            f"资金缺口约 {retirement.get('gap', '-') } 元。\n\n"
             f"## 产品偏好\n"
-            f"客户历史行为偏好集中在 {behavior.get('top_product', '-') }，可作为方案落地时的沟通切入点。\n\n"
+            f"客户历史行为偏好集中在 {behavior.get('top_product', '-') }，"
+            f"相关行为次数为 {behavior.get('counts', {}).get(behavior.get('top_product', ''), 0)} 次。"
+            f"{behavior.get('insight', '')}\n\n"
             f"## 资产配置方式与具体方案\n"
-            f"{allocation_text}\n\n"
+            f"{allocation_text}\n"
+            f"- 组合预计年化收益率约 {round(float(allocation_plan.get('portfolio_return', '0')) * 100, 2):.2f}%。\n"
+            f"- 该方案预计退休时可积累 {retirement.get('accumulated_asset_at_retirement', '-') } 元，"
+            f"{'能够覆盖养老资金需求。' if allocation_plan.get('covers_gap') else '仍需继续优化缺口。'}\n\n"
             f"## 其他建议\n"
             f"- 建议每年复盘一次养老目标与资产配置。\n"
-            f"- 若收入、支出或风险偏好变化，应同步更新测算。"
+            f"- 若收入、支出或风险偏好变化，应同步更新测算。\n"
+            f"- 由于客户当前偏好偏向 {behavior.get('top_product', '-') }，实际调整配置时可采用分步迁移方式，降低行为偏差。"
         )
+
+    @staticmethod
+    def _proposal_matches_payload(text: str, payload: dict[str, Any]) -> bool:
+        allocation_plan = payload.get("allocation_plan", {})
+        for item in allocation_plan.get("allocation", []):
+            product = str(item.get("product", ""))
+            weight = int(round(float(item.get("weight", "0")) * 100))
+            if weight <= 0:
+                continue
+            product_name = "固收 + 产品" if product == "固收+产品" else product
+            if product_name not in text and product not in text:
+                return False
+            if f"{weight}%" not in text:
+                return False
+        return True
 
     @staticmethod
     def _space_duration(text: str) -> str:

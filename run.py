@@ -186,6 +186,9 @@ class PensionPlanningAgent:
             if match:
                 years = int(match.group(1))
                 annual = str(float(match.group(2)) / 100)
+                plan.memory_update.scenario["inflation_annual"] = str(
+                    DEFAULT_CONFIG.inflation_annual
+                )
                 plan.memory_update.scenario["inflation_after_years"] = years
                 plan.memory_update.scenario["inflation_after_years_annual"] = annual
 

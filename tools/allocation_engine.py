@@ -42,7 +42,10 @@ class AllocationEngine:
         extra_saving = Decimal(str((scenario or {}).get("extra_monthly_saving", "0")))
         actual_monthly_saving = profile.monthly_saving + extra_saving
         allocation_objective = str(
-            preferences.get("allocation_objective", "")
+            (scenario or {}).get(
+                "allocation_objective",
+                preferences.get("allocation_objective", ""),
+            )
         ).strip()
 
         if allocation_objective == "maximize_return":
@@ -294,7 +297,8 @@ class AllocationEngine:
                 weight_map[product] = weight_map.get(product, Decimal("0")) + remainder
                 break
 
-        ordered_products = [
+        ordered_products: list[str] = []
+        for product in (
             primary_product,
             "现金理财",
             "年金险",
@@ -302,7 +306,9 @@ class AllocationEngine:
             "短债类产品",
             "固收+产品",
             "权益类产品",
-        ]
+        ):
+            if product not in ordered_products:
+                ordered_products.append(product)
         allocation: list[AllocationItem] = []
         portfolio_return = Decimal("0")
         portfolio_risk = Decimal("0")

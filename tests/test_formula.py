@@ -131,6 +131,29 @@ class TestFormulaEngine(unittest.TestCase):
         )
         self.assertEqual(int(result.retirement_monthly_expend), 15000)
 
+    def test_split_inflation_required_asset(self) -> None:
+        profile = CustomerProfile(
+            user_id="V500001",
+            age=22,
+            gender="男",
+            risk_level="R3",
+            net_asset=Decimal("5000"),
+            monthly_income=Decimal("5000"),
+            monthly_expend=Decimal("4000"),
+            pension=Decimal("5000"),
+            enterprise_ann=Decimal("0"),
+        )
+        result = self.engine.calculate(
+            profile,
+            {"retirement_goal": "消费水平不下降"},
+            {
+                "inflation_annual": Decimal("0.02"),
+                "inflation_after_years": 10,
+                "inflation_after_years_annual": Decimal("0.03"),
+            },
+        )
+        self.assertEqual(int(result.required_asset_at_retirement), 1947939)
+
     def test_round_money(self) -> None:
         self.assertEqual(round_money(Decimal("9075.5")), Decimal("9076"))
         self.assertEqual(round_money(Decimal("9075.4")), Decimal("9075"))

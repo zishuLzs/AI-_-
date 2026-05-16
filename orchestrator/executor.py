@@ -31,6 +31,7 @@ class ToolExecutor:
         self.memory = memory_manager
 
     def execute(self, plan: PlannerOutput, session_id: str, question: str) -> dict[str, Any]:
+        self._apply_memory_update_before_execution(session_id, plan)
         results: dict[str, Any] = {}
         for tc in plan.tool_calls:
             try:
@@ -44,10 +45,12 @@ class ToolExecutor:
                 )
                 raise ToolExecutionFailure(record) from e
 
-        self._apply_memory_update(session_id, plan)
+        self.memory.set_last_case_tag(session_id, plan.case_tag)
         return results
 
-    def _apply_memory_update(self, session_id: str, plan: PlannerOutput) -> None:
+    def _apply_memory_update_before_execution(
+        self, session_id: str, plan: PlannerOutput
+    ) -> None:
         mu = plan.memory_update
         if plan.customer_id:
             self.memory.set_customer_id(session_id, plan.customer_id)
@@ -55,7 +58,6 @@ class ToolExecutor:
             self.memory.remember_preferences(session_id, mu.preferences)
         if mu.scenario:
             self.memory.remember_scenario(session_id, mu.scenario)
-        self.memory.set_last_case_tag(session_id, plan.case_tag)
 
     def _dispatch(self, tc: ToolCall, session_id: str, question: str) -> Any:
         name = tc.name

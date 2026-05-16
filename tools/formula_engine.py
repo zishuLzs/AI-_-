@@ -166,13 +166,16 @@ class RetirementFormulaEngine:
 
     @staticmethod
     def present_value_annuity_factor(monthly_rate: Decimal, periods: int) -> Decimal:
-        """PV factor for annuity: (1 - (1+r)^-n) / r."""
+        """PV factor for annuity-due: Σ(1/(1+r)^k, k=0..n-1)."""
         if periods <= 0:
             return Decimal("0")
         if monthly_rate == 0:
             return Decimal(periods)
-        ratio = Decimal("1") / (Decimal("1") + monthly_rate)
-        return (Decimal("1") - (ratio**periods)) / monthly_rate
+        ordinary = (
+            Decimal("1")
+            - (Decimal("1") + monthly_rate) ** (-periods)
+        ) / monthly_rate
+        return ordinary * (Decimal("1") + monthly_rate)
 
     def calculate_retirement_age(
         self, gender: str, current_age: int
