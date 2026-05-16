@@ -21,10 +21,6 @@ import threading
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger(__name__)
 
-_proj_root = os.path.dirname(os.path.abspath(__file__))
-if _proj_root not in sys.path:
-    sys.path.insert(0, _proj_root)
-
 from config.settings import DEFAULT_CONFIG
 from llm.client import LLMClient
 from orchestrator.composer import LLMComposer
