@@ -131,6 +131,9 @@ class ToolExecutor:
                 "retirement_asset_projection": str(plan_obj.retirement_asset_projection),
                 "covers_gap": plan_obj.covers_gap,
                 "reasoning_tags": plan_obj.reasoning_tags,
+                "product_projections": self.allocation_skill.product_projections(
+                    session_id, cid
+                ),
             }
 
         if name == "generate_proposal_payload":

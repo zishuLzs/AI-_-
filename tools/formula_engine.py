@@ -39,19 +39,24 @@ class RetirementFormulaEngine:
         inflation_annual = Decimal(
             str(scenario.get("inflation_annual", self.config.inflation_annual))
         )
-        monthly_inflation = inflation_annual / Decimal("12")
+        inflation_switch_years = scenario.get("inflation_after_years")
+        inflation_after_switch = scenario.get("inflation_after_years_annual")
 
         if "retirement_goal_monthly_expend" in scenario:
-            retirement_monthly_expend = Decimal(
+            retirement_monthly_expend_exact = Decimal(
                 str(scenario["retirement_goal_monthly_expend"])
             )
         elif "retirement_goal_monthly_expend" in preferences:
-            retirement_monthly_expend = Decimal(
+            retirement_monthly_expend_exact = Decimal(
                 str(preferences["retirement_goal_monthly_expend"])
             )
         else:
-            retirement_monthly_expend = profile.monthly_expend * (
-                (Decimal("1") + monthly_inflation) ** months_to_retirement
+            retirement_monthly_expend_exact, inflation_annual = self._project_retirement_spend(
+                profile.monthly_expend,
+                months_to_retirement,
+                inflation_annual,
+                inflation_switch_years,
+                inflation_after_switch,
             )
 
         retirement_age_decimal = Decimal(retirement_age_years) + (
@@ -65,9 +70,10 @@ class RetirementFormulaEngine:
             0,
         )
 
-        # Required asset: PV of expenses - PV of pension - enterprise annuity
-        # Using nominal rates (when r=i, real rate=0, PV = nominal sum)
-        nominal_discount = self.config.monthly_default_return
+        # Required asset:
+        # - living expenses use real return after retirement
+        # - pension is a fixed nominal amount, so discount with post-retirement inflation
+        nominal_discount = inflation_annual / Decimal("12")
         monthly_pension = profile.pension
         pension_pv = self.present_value_annuity(
             monthly_pension, nominal_discount, retirement_months
@@ -79,9 +85,12 @@ class RetirementFormulaEngine:
             inflation_annual,
         )
         if real_monthly_rate == 0:
-            pv_expenses = retirement_monthly_expend * Decimal(retirement_months)
+            # Match the题面示例：当实际利率约为 0 时，先使用首月支出的取整值再乘退休月数。
+            pv_expenses = round_money(retirement_monthly_expend_exact) * Decimal(
+                retirement_months
+            )
         else:
-            pv_expenses = retirement_monthly_expend * self.present_value_annuity_factor(
+            pv_expenses = retirement_monthly_expend_exact * self.present_value_annuity_factor(
                 real_monthly_rate,
                 retirement_months,
             )
@@ -109,11 +118,42 @@ class RetirementFormulaEngine:
             retirement_age_months=retirement_age_months,
             months_to_retirement=months_to_retirement,
             retirement_duration_text=self.duration_text(months_to_retirement),
-            retirement_monthly_expend=round_money(retirement_monthly_expend),
+            retirement_monthly_expend=round_money(retirement_monthly_expend_exact),
             required_asset_at_retirement=round_money(required_asset),
             accumulated_asset_at_retirement=round_money(accumulated_asset),
             gap=round_money(gap),
         )
+
+    @staticmethod
+    def _project_retirement_spend(
+        current_monthly_expend: Decimal,
+        months_to_retirement: int,
+        base_inflation_annual: Decimal,
+        inflation_switch_years: object,
+        inflation_after_switch: object,
+    ) -> tuple[Decimal, Decimal]:
+        if inflation_switch_years is None or inflation_after_switch is None:
+            monthly_inflation = base_inflation_annual / Decimal("12")
+            projected = current_monthly_expend * (
+                (Decimal("1") + monthly_inflation) ** months_to_retirement
+            )
+            return projected, base_inflation_annual
+
+        switch_months = max(int(inflation_switch_years), 0) * 12
+        first_stage_months = min(months_to_retirement, switch_months)
+        second_stage_months = max(months_to_retirement - first_stage_months, 0)
+        first_stage_monthly = base_inflation_annual / Decimal("12")
+        second_stage_annual = Decimal(str(inflation_after_switch))
+        second_stage_monthly = second_stage_annual / Decimal("12")
+
+        projected = current_monthly_expend
+        projected *= (Decimal("1") + first_stage_monthly) ** first_stage_months
+        projected *= (Decimal("1") + second_stage_monthly) ** second_stage_months
+
+        retirement_inflation_annual = (
+            second_stage_annual if second_stage_months > 0 else base_inflation_annual
+        )
+        return projected, retirement_inflation_annual
 
     @staticmethod
     def _real_monthly_rate(

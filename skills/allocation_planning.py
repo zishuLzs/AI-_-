@@ -31,6 +31,12 @@ class AllocationPlanningSkill:
         retirement = self.retirement_skill.calculate(session_id, customer_id)
         return self.engine.build_plan(profile, retirement, behavior, state.preferences, state.scenario)
 
+    def product_projections(self, session_id: str, customer_id: str):
+        state = self.memory_manager.get_session(session_id)
+        profile = self.profile_skill.get_profile(session_id, customer_id)
+        retirement = self.retirement_skill.calculate(session_id, customer_id)
+        return self.engine.analyze_product_projections(profile, retirement, state.scenario)
+
     def answer(self, session_id: str, customer_id: str) -> str:
         plan = self.plan(session_id, customer_id)
         ordered_items = sorted(

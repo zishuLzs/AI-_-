@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from tools.sql_executor import SQLExecutor
+from tools.sql_templates import SQLTemplates
 
 
 _EQUITY_KEYWORDS = ("权益", "R4", "R5")

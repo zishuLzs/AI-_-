@@ -85,6 +85,8 @@ class PlanValidator:
         allowed_scenario_keys = frozenset(
             {
                 "inflation_annual",
+                "inflation_after_years",
+                "inflation_after_years_annual",
                 "extra_monthly_saving",
                 "retirement_goal_monthly_expend",
                 "allocation_objective",

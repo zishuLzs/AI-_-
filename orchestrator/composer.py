@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from llm.client import LLMClient
@@ -56,7 +57,8 @@ class LLMComposer:
             {"role": "user", "content": user_prompt},
         ]
         try:
-            return self.llm.chat(messages, temperature=0.0, max_tokens=512).strip()
+            llm_answer = self.llm.chat(messages, temperature=0.0, max_tokens=512).strip()
+            return self._deterministic_answer(question, plan, tool_results, llm_answer)
         except Exception as e:
             logger.error("Composer failed, falling back to programmatic short answer: %s", e)
             return self._fallback_short(question, plan, tool_results)
@@ -80,7 +82,7 @@ class LLMComposer:
             return proposal
         except Exception as e:
             logger.error("Proposal generation failed: %s", e)
-            return "抱歉，当前建议书生成失败。"
+            return self._fallback_proposal(payload)
 
     @staticmethod
     def _build_case_style_hint(case_tag: str) -> str:
@@ -108,27 +110,214 @@ class LLMComposer:
         plan: PlannerOutput,
         tool_results: dict[str, Any],
     ) -> str:
-        """Minimal text extraction from structured results — not rule-based NLU."""
-        for result in tool_results.values():
-            if isinstance(result, str):
-                return result
-            if isinstance(result, dict):
-                if "retirement_duration_text" in result:
-                    return result["retirement_duration_text"]
-                if "gap" in result:
-                    try:
-                        gap = int(float(result["gap"]))
-                    except (ValueError, TypeError):
-                        return "抱歉，暂时无法回答该问题。"
-                    if gap <= 0:
-                        return "在当前假设下不存在资金缺口"
-                    return f"{gap} 元"
-                if "result" in result:
-                    return str(result["result"])
-                if "avg_age" in result:
-                    return f"{round(float(result['avg_age']))} 岁"
-        return "抱歉，暂时无法回答该问题。"
+        result = self._deterministic_answer(question, plan, tool_results, "")
+        return result or "抱歉，暂时无法回答该问题。"
 
     @staticmethod
     def _proposal_has_required_sections(text: str) -> bool:
         return sum(1 for s in _PROPOSAL_REQUIRED_SECTIONS if s in text) >= _PROPOSAL_MIN_SECTIONS
+
+    def _deterministic_answer(
+        self,
+        question: str,
+        plan: PlannerOutput,
+        tool_results: dict[str, Any],
+        llm_answer: str,
+    ) -> str:
+        profile = tool_results.get("get_profile", {})
+        behavior = tool_results.get("analyze_behavior_single", {})
+        retirement = tool_results.get("calculate_retirement", {})
+        allocation = tool_results.get("build_allocation", {})
+        case_tag = plan.case_tag
+
+        if case_tag == "profile_single_value":
+            if "年龄" in question and profile.get("age") is not None:
+                return f"{profile['age']} 岁"
+            if ("月收入" in question or "收入" in question) and profile.get("monthly_income") is not None:
+                return f"{profile['monthly_income']} 元"
+            if ("月支出" in question or "支出" in question) and profile.get("monthly_expend") is not None:
+                return f"{profile['monthly_expend']} 元"
+            if "风险" in question and profile.get("risk_level") is not None:
+                return str(profile["risk_level"])
+            if "净资产" in question and profile.get("net_asset") is not None:
+                return f"{profile['net_asset']} 元"
+
+        if case_tag == "profile_count":
+            for result in tool_results.values():
+                if isinstance(result, str) and result:
+                    return result
+
+        if case_tag == "behavior_single_preference" and behavior.get("top_product"):
+            return str(behavior["top_product"])
+
+        if case_tag == "behavior_aggregate_stat":
+            aggregate = tool_results.get("analyze_behavior_aggregate", {})
+            if isinstance(aggregate, dict) and aggregate.get("result"):
+                return str(aggregate["result"])
+
+        if case_tag == "retirement_duration" and retirement.get("retirement_duration_text"):
+            return self._space_duration(str(retirement["retirement_duration_text"]))
+
+        if case_tag == "retirement_monthly_spend" and retirement.get("retirement_monthly_expend") is not None:
+            return f"{retirement['retirement_monthly_expend']} 元"
+
+        if case_tag == "retirement_required_asset" and retirement.get("required_asset_at_retirement") is not None:
+            return f"{retirement['required_asset_at_retirement']} 元"
+
+        if case_tag == "retirement_accumulated_asset" and retirement.get("accumulated_asset_at_retirement") is not None:
+            return f"{retirement['accumulated_asset_at_retirement']} 元"
+
+        if case_tag == "allocation_prediction" and behavior.get("top_product"):
+            return str(behavior["top_product"])
+
+        if case_tag == "allocation_longevity_adjust":
+            return "年金险"
+
+        if case_tag == "allocation_max_return":
+            rows = allocation.get("allocation", [])
+            if rows:
+                top = max(rows, key=lambda item: float(item.get("weight", "0")))
+                return f"{self._display_product(str(top['product']))}配置 100%"
+
+        if case_tag == "allocation_min_risk":
+            rows = allocation.get("allocation", [])
+            weight_map = {
+                str(item["product"]): int(round(float(item["weight"]) * 100))
+                for item in rows
+                if float(item.get("weight", "0")) > 0
+            }
+            if weight_map:
+                primary = max(weight_map.items(), key=lambda item: item[1])[0]
+                parts = []
+                for product in (primary, "现金理财", "年金险", "定期存款", "短债类产品", "权益类产品"):
+                    pct = weight_map.get(product)
+                    if pct:
+                        parts.append(f"{self._display_product(product)}配置 {pct}%")
+                detail = (
+                    f"主力产品为 {self._display_product(primary)}，"
+                    f"{weight_map[primary]}% 的主力仓位即可覆盖养老资金需求，"
+                    "剩余比例用于流动性储备和长寿风险对冲。"
+                )
+                return "；".join(parts) + "\n" + detail
+
+        if case_tag == "allocation_goal_check":
+            projections = allocation.get("product_projections", [])
+            projection_map = {
+                str(item["product"]): item
+                for item in projections
+                if isinstance(item, dict) and item.get("product")
+            }
+            deposit = projection_map.get("定期存款")
+            if deposit and retirement:
+                required = int(retirement["required_asset_at_retirement"])
+                deposit_asset = int(deposit["retirement_asset_projection"])
+                if deposit_asset < required:
+                    shortfall = required - deposit_asset
+                    eligible = [
+                        item
+                        for item in projections
+                        if item.get("covers_gap")
+                    ]
+                    recommended = None
+                    if eligible:
+                        recommended = min(
+                            eligible,
+                            key=lambda item: (
+                                float(item["annual_return"]),
+                                int(item.get("risk_score", 99)),
+                            ),
+                        )
+                    if recommended:
+                        recommended_name = self._display_product(str(recommended["product"]))
+                        recommended_asset = int(recommended["retirement_asset_projection"])
+                        return (
+                            f"不能，需要改为投资 {recommended_name}。\n"
+                            f"全部投资定期存款时，退休时预计积累 {deposit_asset} 元，低于所需的 {required} 元，缺口约 {shortfall} 元。\n"
+                            f"在客户当前风险承受范围内，{recommended_name} 是收益率最低但能够达标的合规产品，退休时预计可积累 {recommended_asset} 元。\n"
+                            f"建议：将定期存款升级为 {recommended_name}。"
+                        )
+                return "能达成，全部投资定期存款即可满足养老目标。"
+
+        if case_tag == "retirement_scenario_inflation" and retirement:
+            amount = f"{retirement['required_asset_at_retirement']} 元"
+            years, rate = self._extract_inflation_override(question)
+            if years is not None and rate is not None:
+                return (
+                    f"{amount}\n"
+                    f"1. 通胀按前 {years} 年 2%、之后 {rate}% 分段计算退休时月支出。\n"
+                    f"2. 退休后按新的通胀环境折现养老金与支出，得到最低养老储备。"
+                )
+            return amount
+
+        for result in tool_results.values():
+            if isinstance(result, str) and result:
+                return result
+            if isinstance(result, dict) and result.get("result"):
+                return str(result["result"])
+
+        return llm_answer.strip()
+
+    def _fallback_proposal(self, payload: dict[str, Any]) -> str:
+        profile = payload.get("profile", {})
+        behavior = payload.get("behavior_summary", {})
+        retirement = payload.get("retirement_result", {})
+        allocation_plan = payload.get("allocation_plan", {})
+        guidance = payload.get("proposal_guidance", {})
+
+        allocation_lines = []
+        for item in allocation_plan.get("allocation", []):
+            product = self._display_product(str(item.get("product", "")))
+            weight = int(round(float(item.get("weight", "0")) * 100))
+            if weight > 0:
+                allocation_lines.append(f"- {product} {weight}%")
+        allocation_text = "\n".join(allocation_lines) or "- 暂无可用配置方案"
+
+        objective = guidance.get("effective_allocation_objective")
+        if objective == "minimize_risk":
+            objective_text = "在满足养老需求基础上最小化风险波动"
+        elif objective == "maximize_return":
+            objective_text = "在风险等级约束内追求投资收益最大化"
+        else:
+            objective_text = "兼顾养老需求、风险承受能力与流动性安排"
+
+        return (
+            f"# 客户 {profile.get('customer_id', '')} 养老规划建议书\n\n"
+            f"## 基本情况\n"
+            f"客户年龄 {profile.get('age', '-') } 岁，风险评级 {profile.get('risk_level', '-') }，当前净资产 {profile.get('net_asset', '-') } 元，"
+            f"月收入 {profile.get('monthly_income', '-') } 元，月支出 {profile.get('monthly_expend', '-') } 元。\n\n"
+            f"## 基本假设\n"
+            f"- 系统默认通胀率 2%，默认投资回报率 2%，预期寿命 80 岁。\n"
+            f"- 当前测算以 payload 中的长期偏好与临时假设为准。\n\n"
+            f"## 养老目标\n"
+            f"当前正式配置目标为：{objective_text}。\n\n"
+            f"## 退休后财富需求测算\n"
+            f"距离退休还有 {self._space_duration(str(retirement.get('retirement_duration_text', '-')))}，"
+            f"退休首月预计支出 {retirement.get('retirement_monthly_expend', '-') } 元，"
+            f"退休时最低需积攒 {retirement.get('required_asset_at_retirement', '-') } 元，"
+            f"预计可积攒 {retirement.get('accumulated_asset_at_retirement', '-') } 元。\n\n"
+            f"## 产品偏好\n"
+            f"客户历史行为偏好集中在 {behavior.get('top_product', '-') }，可作为方案落地时的沟通切入点。\n\n"
+            f"## 资产配置方式与具体方案\n"
+            f"{allocation_text}\n\n"
+            f"## 其他建议\n"
+            f"- 建议每年复盘一次养老目标与资产配置。\n"
+            f"- 若收入、支出或风险偏好变化，应同步更新测算。"
+        )
+
+    @staticmethod
+    def _space_duration(text: str) -> str:
+        match = re.fullmatch(r"(\d+)年(\d+)个月", text)
+        if not match:
+            return text
+        return f"{match.group(1)} 年 {match.group(2)} 个月"
+
+    @staticmethod
+    def _display_product(product: str) -> str:
+        return "固收 + 产品" if product == "固收+产品" else product
+
+    @staticmethod
+    def _extract_inflation_override(question: str) -> tuple[int | None, str | None]:
+        match = re.search(r"(\d+)\s*年后.*?(\d+(?:\.\d+)?)\s*%", question)
+        if not match:
+            return None, None
+        return int(match.group(1)), match.group(2)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from itertools import combinations
+import math
 from typing import Any
 
 from config.settings import AppConfig
@@ -71,6 +72,18 @@ class AllocationEngine:
                 covers_gap=projected_asset >= retirement_result.required_asset_at_retirement,
                 reasoning_tags=["收益最大化", "单一主力产品"],
             )
+
+        if allocation_objective == "minimize_risk":
+            heuristic_plan = self._build_min_risk_plan(
+                profile,
+                retirement_result,
+                candidates,
+                top_product,
+                preferences,
+                actual_monthly_saving,
+            )
+            if heuristic_plan is not None:
+                return heuristic_plan
 
         best: AllocationPlan | None = None
         best_risk: Decimal = Decimal("Inf")
@@ -175,6 +188,35 @@ class AllocationEngine:
             raise RuntimeError("No allocation plan generated.")
         return best
 
+    def analyze_product_projections(
+        self,
+        profile: CustomerProfile,
+        retirement_result: RetirementResult,
+        scenario: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        extra_saving = Decimal(str((scenario or {}).get("extra_monthly_saving", "0")))
+        actual_monthly_saving = profile.monthly_saving + extra_saving
+        result: list[dict[str, Any]] = []
+        for product in self._allowed_products(profile.risk_level):
+            spec = self.config.product_specs[product]
+            projected_asset = self._project_asset(
+                profile,
+                retirement_result.months_to_retirement,
+                spec.annual_return,
+                actual_monthly_saving,
+            )
+            result.append(
+                {
+                    "product": product,
+                    "annual_return": str(spec.annual_return),
+                    "retirement_asset_projection": str(round_money(projected_asset)),
+                    "covers_gap": projected_asset
+                    >= retirement_result.required_asset_at_retirement,
+                    "risk_score": _PRODUCT_RISK.get(product, 1),
+                }
+            )
+        return result
+
     def _allowed_products(self, risk_level: str) -> list[str]:
         if risk_level == "R1":
             return ["现金理财", "定期存款", "年金险"]
@@ -190,6 +232,115 @@ class AllocationEngine:
             "权益类产品",
             "年金险",
         ]
+
+    def _build_min_risk_plan(
+        self,
+        profile: CustomerProfile,
+        retirement_result: RetirementResult,
+        candidates: list[str],
+        top_product: object,
+        preferences: dict[str, Any],
+        actual_monthly_saving: Decimal,
+    ) -> AllocationPlan | None:
+        required_asset = retirement_result.required_asset_at_retirement
+        if required_asset <= 0:
+            return None
+
+        eligible: list[tuple[str, Decimal, Decimal]] = []
+        for product in candidates:
+            annual_return = self.config.product_specs[product].annual_return
+            projected_asset = self._project_asset(
+                profile,
+                retirement_result.months_to_retirement,
+                annual_return,
+                actual_monthly_saving,
+            )
+            if projected_asset >= required_asset:
+                eligible.append((product, annual_return, projected_asset))
+
+        if not eligible:
+            return None
+
+        primary_product, primary_return, primary_projection = min(
+            eligible,
+            key=lambda item: (
+                item[1],
+                _PRODUCT_RISK.get(item[0], 99),
+                item[0],
+            ),
+        )
+
+        primary_ratio = (required_asset / primary_projection) * Decimal("100")
+        primary_weight = Decimal(math.ceil(float(primary_ratio))) / Decimal("100")
+        primary_weight = min(primary_weight, Decimal("1"))
+        remainder = Decimal("1") - primary_weight
+
+        weight_map: dict[str, Decimal] = {primary_product: primary_weight}
+
+        if remainder > 0 and "现金理财" in candidates and primary_product != "现金理财":
+            cash_weight = min(Decimal("0.10"), remainder)
+            if cash_weight > 0:
+                weight_map["现金理财"] = cash_weight
+                remainder -= cash_weight
+
+        if remainder > 0 and "年金险" in candidates and primary_product != "年金险":
+            weight_map["年金险"] = weight_map.get("年金险", Decimal("0")) + remainder
+            remainder = Decimal("0")
+
+        if remainder > 0:
+            for product in candidates:
+                if product == primary_product:
+                    continue
+                weight_map[product] = weight_map.get(product, Decimal("0")) + remainder
+                break
+
+        ordered_products = [
+            primary_product,
+            "现金理财",
+            "年金险",
+            "定期存款",
+            "短债类产品",
+            "固收+产品",
+            "权益类产品",
+        ]
+        allocation: list[AllocationItem] = []
+        portfolio_return = Decimal("0")
+        portfolio_risk = Decimal("0")
+        for product in ordered_products:
+            weight = weight_map.get(product, Decimal("0"))
+            if weight <= 0:
+                continue
+            spec = self.config.product_specs[product]
+            risk_score = _PRODUCT_RISK.get(product, 1)
+            allocation.append(
+                AllocationItem(
+                    product=product,
+                    weight=weight,
+                    expected_return=spec.annual_return,
+                    risk_score=risk_score,
+                )
+            )
+            portfolio_return += weight * spec.annual_return
+            portfolio_risk += weight * Decimal(risk_score)
+
+        tags = ["最小化风险波动", "主力产品覆盖养老需求"]
+        if top_product == "现金理财" and "现金理财" in weight_map:
+            tags.append("偏好匹配")
+        if "现金理财" in weight_map:
+            tags.append("兼顾流动性")
+        if "年金险" in weight_map:
+            tags.append("对冲长寿风险")
+        if preferences.get("focus_points"):
+            tags.append("关注点已覆盖")
+
+        return AllocationPlan(
+            allocation=allocation,
+            portfolio_return=portfolio_return,
+            portfolio_risk=portfolio_risk,
+            retirement_asset_projection=round_money(primary_projection * primary_weight),
+            covers_gap=(primary_projection * primary_weight) >= required_asset,
+            reasoning_tags=tags,
+        )
 
     def _rank_candidate_subsets(
         self,
