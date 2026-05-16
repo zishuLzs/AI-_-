@@ -92,6 +92,34 @@ class PensionPlanningAgent:
         self.composer = composer
         self.memory_manager = memory_manager
 
+    @staticmethod
+    def _ensure_required_tools(plan: "PlannerOutput", session_id: str) -> None:
+        """Inject mandatory tools the LLM planner may have omitted."""
+        from llm.schemas import ToolCall
+
+        tool_names = {tc.name for tc in plan.tool_calls}
+
+        def _ensure(name: str, params: dict | None = None) -> None:
+            if name not in tool_names:
+                plan.tool_calls.append(ToolCall(name=name, params=params or {}))
+
+        if plan.intent == "retirement":
+            _ensure("get_profile")
+            _ensure("calculate_retirement")
+        elif plan.intent == "allocation":
+            _ensure("get_profile")
+            _ensure("analyze_behavior_single")
+            _ensure("calculate_retirement")
+            _ensure("build_allocation")
+        elif plan.intent == "proposal":
+            _ensure("get_profile")
+            _ensure("analyze_behavior_single")
+            _ensure("calculate_retirement")
+            _ensure("build_allocation")
+            _ensure("generate_proposal_payload")
+        elif plan.intent == "behavior":
+            _ensure("analyze_behavior_single")
+
     def answer(self, question: str, session_id: str = "default") -> str:
         # Step 1: LLM Planner — intent, params, tool plan
         try:
@@ -100,7 +128,10 @@ class PensionPlanningAgent:
             logger.error("Planner failure in answer(): %s", e.record.detail)
             return format_user_failure(e.record.category)
 
-        # Step 2: Apply memory updates and execute tools
+        # Step 2: Ensure plan has required tools for its intent
+        self._ensure_required_tools(plan, session_id)
+
+        # Step 3: Apply memory updates and execute tools
         try:
             tool_results = self.executor.execute(plan, session_id, question)
         except ToolExecutionFailure as e:
@@ -110,16 +141,16 @@ class PensionPlanningAgent:
             logger.exception("Unexpected error in tool execution")
             return format_user_failure(FailureCategory.TOOL_EXECUTION_ERROR)
 
-        # Step 3: Handle context-only (no tool results)
+        # Step 4: Handle context-only (no tool results)
         if plan.intent == "context":
             self.memory_manager.clear_scenario(session_id)
             return "好的，已记录这些偏好与关注点，后续测算和建议会据此进行。"
 
-        # Step 4: If no tool results and intent needs data, return error
+        # Step 5: If no tool results and intent needs data, return error
         if not tool_results and plan.intent not in ("profile", "fallback"):
             return "抱歉，当前问题所需信息不完整。"
 
-        # Step 5: LLM Composer — generate final answer
+        # Step 6: LLM Composer — generate final answer
         try:
             result = self.composer.compose(question, plan, tool_results)
         except Exception:
