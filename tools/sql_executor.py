@@ -1,4 +1,4 @@
-"""SQL executor supporting both MySQL (production) and SQLite (local dev)."""
+"""SQL executor supporting MySQL (production) and SQLite (local dev)."""
 
 from __future__ import annotations
 
@@ -9,54 +9,35 @@ from typing import Any
 logger = logging.getLogger(__name__)
 _DB_TIMEOUT = 10  # seconds
 
+# Local dev defaults from /work/data/task2/README.md
+_DEFAULT_HOST = "172.16.48.27"
+_DEFAULT_PORT = "3306"
+_DEFAULT_USER = "test_user"
+_DEFAULT_PASSWORD = "R6#pV9@kT3!xM2$q"
+_DEFAULT_DB = "cmb_contest"
+
 
 class SQLExecutor:
     """Execute SQL against MySQL or SQLite depending on environment."""
 
     def __init__(self, db_config: dict[str, Any]) -> None:
         self.db_config = db_config
-        self._backend = db_config.get("backend", "sqlite")
+        self._backend = db_config.get("backend", "mysql")
 
     @staticmethod
     def get_db_config() -> dict[str, Any]:
-        """Read DB config from environment variables.
-
-        MySQL env vars (production):
-            TASK2_DB_HOST, TASK2_DB_PORT, TASK2_DB_USER,
-            TASK2_DB_PASSWORD, TASK2_DB_NAME,
-            TASK2_BASE_TABLE, TASK2_ACTION_TABLE
-
-        SQLite env var (local dev):
-            TASK2_SQLITE_PATH (optional, defaults to ./pension_agent.db)
-        """
         base_table = os.environ.get("TASK2_BASE_TABLE", "train_base_table")
         action_table = os.environ.get("TASK2_ACTION_TABLE", "train_action_table")
-
-        db_host = os.environ.get("TASK2_DB_HOST")
-        if db_host:
-            config: dict[str, Any] = {
-                "backend": "mysql",
-                "host": db_host,
-                "port": int(os.environ.get("TASK2_DB_PORT", "3306")),
-                "user": os.environ.get("TASK2_DB_USER", "root"),
-                "password": os.environ.get("TASK2_DB_PASSWORD", ""),
-                "database": os.environ.get("TASK2_DB_NAME", ""),
-                "base_table": base_table,
-                "action_table": action_table,
-            }
-            # Validate required MySQL config
-            missing = [k for k in ("host", "user", "database") if not config.get(k)]
-            if missing:
-                logger.warning(
-                    "MySQL config missing: %s — falling back to SQLite", missing
-                )
-                return SQLExecutor._sqlite_config(base_table, action_table)
-            logger.info("Using MySQL backend: %s:%s/%s", db_host, config["port"], config["database"])
-            return config
-
-        logger.info("TASK2_DB_HOST not set, using SQLite backend")
-
-        return SQLExecutor._sqlite_config(base_table, action_table)
+        return {
+            "backend": "mysql",
+            "host": os.environ.get("TASK2_DB_HOST", _DEFAULT_HOST),
+            "port": int(os.environ.get("TASK2_DB_PORT", _DEFAULT_PORT)),
+            "user": os.environ.get("TASK2_DB_USER", _DEFAULT_USER),
+            "password": os.environ.get("TASK2_DB_PASSWORD", _DEFAULT_PASSWORD),
+            "database": os.environ.get("TASK2_DB_NAME", _DEFAULT_DB),
+            "base_table": base_table,
+            "action_table": action_table,
+        }
 
     @staticmethod
     def _sqlite_config(base_table: str, action_table: str) -> dict[str, Any]:
@@ -64,7 +45,6 @@ class SQLExecutor:
             "TASK2_SQLITE_PATH",
             os.path.join(os.getcwd(), "pension_agent.db"),
         )
-        logger.info("Using SQLite backend at %s", sqlite_path)
         return {
             "backend": "sqlite",
             "path": sqlite_path,
@@ -99,7 +79,7 @@ class SQLExecutor:
             except (pymysql.err.OperationalError, pymysql.err.InternalError) as exc:
                 raise ConnectionError(
                     f"MySQL connection failed: {exc}. "
-                    "Check TASK2_DB_HOST/PORT/USER/PASSWORD/NAME."
+                    f"Check TASK2_DB_HOST/PORT/USER/PASSWORD/NAME."
                 ) from exc
         else:
             import sqlite3

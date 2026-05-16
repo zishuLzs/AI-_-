@@ -14,7 +14,7 @@ ONE_API_URL = os.getenv(
     "ONE_API_URL", "https://one-api-other.nowcoder.com/v1/chat/completions"
 )
 ONE_API_KEY = os.getenv("ONE_API_KEY", "YOUR_ONE_API_KEY")
-DEFAULT_MODEL = "qwen3.6-flash"
+DEFAULT_MODEL = os.getenv("ONE_API_MODEL", "qwen3.6-flash")
 REQUEST_TIMEOUT = 60
 MAX_RETRIES = 3
 RETRY_DELAY_BASE = 1.0
