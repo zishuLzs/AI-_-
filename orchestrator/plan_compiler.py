@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
 
 from llm.schemas import (
@@ -112,15 +113,13 @@ class PlanCompiler:
 
     def _build_profile_tools(self, plan: SemanticPlan, question: str) -> list[ToolCall]:
         q = plan.query_semantics
-        if self._is_profile_count_question(question):
-            params = {"field": q.metric or "age", "agg": "count"}
-            params.update(self._profile_filter_params(q))
-            return [ToolCall(name="profile_query", params=params)]
-        if plan.customer_scope.type in {"single", "followup"} and q.aggregation == "value":
+        metric = self._resolve_profile_metric(question, q.metric)
+        agg = self._resolve_profile_aggregation(question, q.aggregation)
+        if plan.customer_scope.type in {"single", "followup"} and agg == "value":
             return [ToolCall(name="get_profile", params=self._customer_param(plan.customer_scope))]
 
-        params = {"field": q.metric or "age", "agg": q.aggregation or "count"}
-        params.update(self._profile_filter_params(q))
+        params = {"field": metric or "age", "agg": agg}
+        params.update(self._profile_filter_params(q, question, metric))
         return [ToolCall(name="profile_query", params=params)]
 
     def _build_behavior_tools(self, plan: SemanticPlan, question: str) -> list[ToolCall]:
@@ -146,8 +145,8 @@ class PlanCompiler:
         )
         params: dict[str, Any] = {
             "agg": self._behavior_agg(normalized_query, plan.customer_scope),
-            "action_type": self._behavior_action_type(normalized_query),
-            "product": self._behavior_product(normalized_query),
+            "action_type": self._behavior_action_type(normalized_query, question),
+            "product": self._behavior_product(normalized_query, question),
             "min_count": self._behavior_min_count(normalized_query),
         }
         if plan.customer_scope.customer_id and params["agg"] == "customer_action_count":
@@ -215,7 +214,7 @@ class PlanCompiler:
         question: str,
         default_mode: str | None = None,
     ) -> ToolCall:
-        product = self._behavior_product(plan.query_semantics) or self._resolve_product_from_text(question)
+        product = self._behavior_product(plan.query_semantics, question) or self._resolve_product_from_text(question)
         mode = self._resolve_product_mode(plan, question, default_mode)
         params: dict[str, Any] = {"mode": mode}
         params.update(self._customer_param(plan.customer_scope))
@@ -255,14 +254,13 @@ class PlanCompiler:
         return None
 
     @staticmethod
-    def _profile_filter_params(q: QuerySemantics) -> dict[str, Any]:
+    def _profile_filter_params(q: QuerySemantics, question: str, metric: str) -> dict[str, Any]:
         params: dict[str, Any] = {}
         if q.comparison and isinstance(q.comparison, dict):
-            field = q.metric or ""
             compare_field = q.comparison.get("field")
             operator = q.comparison.get("op")
-            if field:
-                params["field"] = field
+            if metric:
+                params["field"] = metric
             if compare_field:
                 params["compare_field"] = compare_field
             if operator:
@@ -274,7 +272,83 @@ class PlanCompiler:
             if isinstance(first, FilterCondition) and first.field:
                 params["operator"] = first.op
                 params["value"] = first.value
+                return params
+
+        inferred = PlanCompiler._infer_profile_filter_from_text(question, metric)
+        if inferred:
+            params.update(inferred)
         return params
+
+    @staticmethod
+    def _resolve_profile_metric(question: str, metric: str) -> str:
+        if any(token in question for token in ("退休金", "养老金")) and "缺口" not in question:
+            return "pension"
+        if "企业年金" in question:
+            return "enterprise_ann"
+        if "净资产" in question:
+            return "net_asset"
+        if "月支出" in question or ("支出" in question and "退休" not in question):
+            return "monthly_expend"
+        if "结余" in question or "能攒" in question or "攒钱" in question:
+            return "monthly_saving"
+        if "月收入" in question or ("收入" in question and "收益" not in question):
+            return "monthly_income"
+        if "风险" in question:
+            return "risk_level"
+        if any(token in question for token in ("年龄", "几岁", "多大", "中位数")):
+            return "age"
+        return metric or "age"
+
+    @staticmethod
+    def _resolve_profile_aggregation(question: str, aggregation: str) -> str:
+        if "谁的" in question and any(token in question for token in ("最高", "最多", "最大")):
+            return "argmax_customer"
+        if "中位数" in question:
+            return "median"
+        if "平均" in question:
+            return "avg"
+        if PlanCompiler._is_profile_count_question(question):
+            return "count"
+        return aggregation or "value"
+
+    @staticmethod
+    def _infer_profile_filter_from_text(question: str, metric: str) -> dict[str, Any]:
+        if metric == "enterprise_ann" and "大于0" in question:
+            return {"operator": ">", "value": 0}
+        if metric == "risk_level":
+            risk_match = re.search(r"R([1-5])\s*及以上", question, flags=re.IGNORECASE)
+            if risk_match:
+                return {"operator": ">=", "value": f"R{risk_match.group(1)}"}
+        if metric == "age":
+            ge = re.search(r"(\d+)\s*岁及以上", question)
+            if ge:
+                return {"operator": ">=", "value": int(ge.group(1))}
+            lt = re.search(r"(\d+)\s*岁以下", question)
+            if lt:
+                return {"operator": "<", "value": int(lt.group(1))}
+        if metric in {"net_asset", "monthly_saving", "monthly_expend", "monthly_income"}:
+            amount = PlanCompiler._extract_money_amount(question)
+            if amount is None:
+                return {}
+            if "及以上" in question or "大于等于" in question:
+                return {"operator": ">=", "value": amount}
+            if "不超过" in question or "以下" in question or "不高于" in question:
+                return {"operator": "<=", "value": amount}
+            if "高于" in question or "大于" in question:
+                return {"operator": ">", "value": amount}
+        if metric == "pension" and "高于当前月支出" in question:
+            return {"compare_field": "monthly_expend", "operator": ">"}
+        return {}
+
+    @staticmethod
+    def _extract_money_amount(question: str) -> int | None:
+        match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(万)?\s*元", question)
+        if not match:
+            return None
+        value = float(match.group(1))
+        if match.group(2):
+            value *= 10000
+        return int(round(value))
 
     @staticmethod
     def _behavior_agg(q: QuerySemantics, scope: CustomerScope) -> str:
@@ -289,18 +363,26 @@ class PlanCompiler:
         return "total_count" if q.aggregation == "value" else q.aggregation
 
     @staticmethod
-    def _behavior_action_type(q: QuerySemantics) -> str:
+    def _behavior_action_type(q: QuerySemantics, question: str) -> str:
         for item in q.filters:
             if item.field == "action_type" and item.value is not None:
                 return str(item.value)
+        if "收藏" in question:
+            return "收藏"
+        if "购买" in question or "买过" in question or "买" in question:
+            return "购买"
+        if "浏览详情" in question:
+            return "浏览详情"
+        if "浏览持仓" in question:
+            return "浏览持仓"
         return "浏览"
 
     @staticmethod
-    def _behavior_product(q: QuerySemantics) -> str | None:
+    def _behavior_product(q: QuerySemantics, question: str) -> str | None:
         for item in q.filters:
             if item.field == "product" and item.value is not None:
                 return str(item.value)
-        return None
+        return PlanCompiler._resolve_product_from_text(question)
 
     @staticmethod
     def _behavior_min_count(q: QuerySemantics) -> int:

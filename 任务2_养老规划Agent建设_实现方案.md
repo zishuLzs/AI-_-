@@ -26,6 +26,168 @@
 4. 根据客户风险等级、人生阶段和行为偏好生成资产配置方案。
 5. 汇总客户在多轮对话中的关注点，输出完整投资建议书。
 
+### 2.1.1 五项业务的 LLM 与工具调用流程
+
+为了兼顾正确率、时延和 Token 成本，这 5 项业务统一遵循一个原则：
+
+1. `LLM` 负责理解问题、抽取参数、选择 Skill、组织回复。
+2. `Tool` 负责查库、计算、规则匹配、优化求解、记忆读写。
+3. `最终答案` 由 LLM 基于结构化结果生成，避免大模型直接“拍脑袋”给数值或产品。
+
+#### 业务一：查询客户基础画像信息
+
+`LLM` 主要负责识别这是基础查询类问题，抽取 `customer_id`、所需字段和统计口径；`Tool` 负责优先读取 `Profile Memory`，未命中时再调用 SQL 模板查询数据库，并把结果回写缓存。
+
+```mermaid
+flowchart TD
+    A[用户提问] --> B[LLM 意图识别为基础查询]
+    B --> C[LLM 抽取客户ID与查询字段]
+    C --> D{Profile Memory 是否命中}
+    D -- 是 --> E[读取客户画像缓存]
+    D -- 否 --> F[选择 SQL 模板]
+    F --> G[SQL Executor 查询数据库]
+    G --> H[写入 Profile Memory]
+    E --> I[返回结构化画像结果]
+    H --> I
+    I --> J[LLM 生成自然语言回复]
+```
+
+推荐拆分为以下步骤：
+
+1. `Intent Router` 将问题归类为 `customer_profile_query`。
+2. `Parameter Extractor` 抽取客户编号、字段名、过滤条件。
+3. `Memory Tool` 先检查该客户基础信息是否已有缓存。
+4. 若缓存未命中，`SQL Generator` 按模板生成 SQL，`SQL Executor` 执行查询。
+5. `LLM Answer Composer` 将结构化结果转成口语化回答。
+
+#### 业务二：分析客户历史行为偏好并映射产品库
+
+`LLM` 负责理解“偏好”问题的分析维度，例如浏览偏好、购买偏好、风险偏好、期限偏好；`Tool` 负责从行为流水中做聚合统计，再用规则引擎把行为标签映射到题目产品库。
+
+```mermaid
+flowchart TD
+    A[用户提问] --> B[LLM 识别为行为分析]
+    B --> C[LLM 抽取客户ID与偏好分析维度]
+    C --> D[选择行为分析 SQL 模板]
+    D --> E[SQL Executor 查询行为数据]
+    E --> F[Behavior Aggregator 聚合浏览购买持仓特征]
+    F --> G[Product Mapping Engine 映射产品标签]
+    G --> H[写入 Preference Memory]
+    H --> I[返回偏好标签与候选产品]
+    I --> J[LLM 输出偏好解读]
+```
+
+推荐拆分为以下步骤：
+
+1. `Intent Router` 将问题归类为 `behavior_analysis`。
+2. `SQL Tool` 查询客户浏览、点击、购买、持有、赎回等行为数据。
+3. `Behavior Aggregator` 生成中间标签，例如 `偏固收`、`偏中低波动`、`偏短久期`、`关注流动性`。
+4. `Product Mapping Engine` 按规则将标签映射到题目给定产品库中的产品类别或候选产品。
+5. `LLM` 对“为什么判断为该偏好、为什么推荐这些产品”做解释，并把稳定偏好写入 `Preference Memory`。
+
+#### 业务三：退休测算
+
+`LLM` 负责抽取测算参数与临时假设，例如退休年龄、通胀率、替代率、当前月支出、目标养老生活水平；`Tool` 负责做所有公式计算并返回可复现结果，避免大模型直接算数。
+
+```mermaid
+flowchart TD
+    A[用户提问] --> B[LLM 识别为养老测算]
+    B --> C[LLM 抽取客户ID与测算参数]
+    C --> D[读取 Profile Memory 与 Preference Memory]
+    D --> E[识别是否存在 Scenario 假设]
+    E --> F[参数标准化与缺省值补齐]
+    F --> G[Retirement Calculator 执行公式测算]
+    G --> H[输出退休年龄支出缺口积累结果]
+    H --> I[临时假设写入 Scenario Memory]
+    I --> J[LLM 生成解释性回复]
+```
+
+推荐拆分为以下步骤：
+
+1. `Intent Router` 将问题归类为 `retirement_calculation`。
+2. `LLM` 从问题中抽取显式参数，并从 `Profile Memory`、`Preference Memory` 中补充缺失参数。
+3. 若用户说“如果、假设、假如”，则只写入 `Scenario Memory`，不污染长期偏好。
+4. `Retirement Calculator Tool` 执行退休年龄、退休时支出、养老金缺口、退休资产积累等公式。
+5. `LLM` 输出结果时同时给出解释，例如“缺口为什么形成、哪个参数最敏感、如果提高每月定投会怎样变化”。
+
+#### 业务四：生成资产配置方案
+
+`LLM` 负责把客户风险等级、人生阶段、行为偏好和养老缺口整合成配置约束；`Tool` 负责根据规则和约束做资产配置求解，并映射到题目产品库。
+
+```mermaid
+flowchart TD
+    A[用户提问] --> B[LLM 识别为配置建议]
+    B --> C[读取客户画像偏好与测算结果]
+    C --> D[LLM 整理配置约束]
+    D --> E[Allocation Engine 生成大类资产配比]
+    E --> F[Product Mapping Engine 映射具体产品]
+    F --> G[Rule Checker 校验风险等级与集中度]
+    G --> H[输出配置方案与备选方案]
+    H --> I[LLM 解释配置逻辑与调仓建议]
+```
+
+推荐拆分为以下步骤：
+
+1. `Intent Router` 将问题归类为 `allocation_planning`。
+2. `Memory Tool` 读取 `Profile Memory`、`Preference Memory` 和最近一次 `Retirement Calculation` 结果。
+3. `LLM Constraint Builder` 形成约束条件，例如风险等级上限、目标收益、流动性要求、养老缺口补足强度。
+4. `Allocation Engine` 先给出大类资产配置比例，如现金管理、固收、权益、养老目标产品。
+5. `Product Mapping Engine` 再从题目产品库选择具体产品。
+6. `Rule Checker` 检查是否违反风险适配、集中度、人生阶段匹配等约束。
+7. `LLM` 负责解释“为什么这样配、偏稳健还是偏进取、如果客户更看重流动性应如何调整”。
+
+#### 业务五：生成完整投资建议书
+
+`LLM` 负责统筹全文结构、汇总多轮对话中的关注点、生成最终文案；`Tool` 负责提供建议书所需的所有结构化素材，包括画像、偏好、测算、配置和历史关注点摘要。
+
+```mermaid
+flowchart TD
+    A[用户提问] --> B[LLM 识别为建议书生成]
+    B --> C[读取 Profile Preference Scenario Memory]
+    C --> D[读取历史测算结果与配置方案]
+    D --> E[Focus Summarizer 汇总多轮关注点]
+    E --> F[Proposal Assembler 组装建议书素材]
+    F --> G[LLM 生成完整建议书初稿]
+    G --> H[Rule Checker 校验数值与结论一致性]
+    H --> I[LLM 输出最终投资建议书]
+```
+
+推荐拆分为以下步骤：
+
+1. `Intent Router` 将问题归类为 `proposal_generation`。
+2. `Session Memory Tool` 读取多轮对话中沉淀的事实、偏好、假设与关注点。
+3. `Focus Summarizer` 识别高频关注项，例如退休年龄、生活质量、流动性、风险承受能力、长寿风险。
+4. `Proposal Assembler` 把客户画像、行为偏好、养老测算结果、资产配置方案整合为统一 JSON。
+5. `LLM Proposal Writer` 基于模板生成建议书，常见结构包括：
+   - 客户基本情况
+   - 养老目标与核心假设
+   - 养老金缺口分析
+   - 推荐配置方案
+   - 风险提示与后续建议
+6. `Consistency Checker` 检查建议书中的数值、产品和结论是否与工具结果一致。
+
+#### 五项业务的统一主流程
+
+从系统架构上看，这 5 项业务可以抽象成同一条总链路，只是中间调用的 Skill 和 Tool 不同：
+
+```mermaid
+flowchart LR
+    A[用户问题] --> B[Intent Router]
+    B --> C[LLM 抽取参数]
+    C --> D[Memory Tool 读取上下文]
+    D --> E[Skill Dispatcher 选择专项能力]
+    E --> F[SQL Tool 或计算工具或配置工具]
+    F --> G[返回结构化结果]
+    G --> H[Memory Tool 写回长期偏好或临时假设]
+    H --> I[LLM 组织最终回答或建议书]
+```
+
+这样设计的好处是：
+
+1. `查询`、`测算`、`配置` 三类高风险环节都由工具保证稳定性。
+2. `偏好理解`、`话术解释`、`建议书生成` 由 LLM 发挥语言和归纳优势。
+3. 所有业务都复用统一的 `Memory + Router + Tool` 框架，便于比赛场景下快速实现和调优。
+
 ### 2.2 技术约束
 
 1. 必须通过 `生成 SQL 并访问数据库` 的方式获取客户信息，不能把全量数据拉到本地做统一分析。
@@ -51,12 +213,12 @@
 
 ### 3.1 总体设计思路
 
-采用 `Router Agent + 专项 Skill + 确定性工具引擎` 的架构。
+采用 `Task Planner + Router Agent + 流程守卫模块 + 专项 Skill + 确定性工具引擎` 的架构。
 
 大模型只负责三类工作：
 
-1. 识别用户意图。
-2. 选择需要调用的 Skill。
+1. 将用户问题拆解为标准子任务。
+2. 识别每个子任务的意图并选择需要调用的 Skill。
 3. 将工具返回结果组织为自然语言答案或建议书。
 
 所有对正确率敏感的工作都交给工具层：
@@ -65,13 +227,20 @@
 2. 数值测算由 `Retirement Calculator Tool` 负责。
 3. 产品映射和配置求解由 `Allocation Engine Tool` 负责。
 4. 会话记忆由 `Session Memory Tool` 负责。
+5. 参数补齐由 `Parameter Completeness Checker` 负责。
+6. 依赖补跑由 `Prerequisite Resolver` 负责。
+7. 输出校验由 `Consistency Checker` 负责。
 
 ### 3.2 架构图
 
 ```text
 用户问题
   ↓
-Intent Router（意图识别 / 问题分类）
+Task Planner（任务拆解 / 顺序规划）
+  ↓
+Intent Router（子任务意图识别 / 问题分类）
+  ↓
+Flow Guard（参数检查 / 依赖补齐）
   ↓
 Skill Dispatcher（技能路由）
   ├─ Customer Profile Skill
@@ -82,12 +251,16 @@ Skill Dispatcher（技能路由）
   ↓
 Tools
   ├─ SQL Generator + SQL Executor
+  ├─ Parameter Completeness Checker
+  ├─ Prerequisite Resolver
   ├─ Retirement Formula Engine
   ├─ Product Mapping Engine
   ├─ Allocation Optimizer
   └─ Session Memory Manager
   ↓
 结构化结果
+  ↓
+Consistency Checker
   ↓
 Answer Composer / Proposal Generator
   ↓
@@ -100,10 +273,154 @@ Answer Composer / Proposal Generator
 2. 题目对数值误差要求严格，因此必须将公式计算做成独立模块。
 3. 题目存在多轮对话记忆要求，因此必须将“客户事实、客户观点、临时假设”拆开管理。
 4. 建议书类题目占分高，因此需要独立的建议书生成 Skill，复用前序分析结果，避免重复查询和重复计算。
+5. 题目存在复合任务和多轮追问，因此需要 `Task Planner` 先统一拆解任务链，而不是只做单轮意图分类。
+6. 题目对结果稳定性要求高，因此需要在 Skill 执行前后分别加入 `参数完备性检查`、`前置条件补齐` 和 `一致性校验`。
+
+### 3.4 优化后主流程
+
+在高优先级优化方案下，系统主流程升级为：
+
+```mermaid
+flowchart LR
+    A[用户问题] --> B[Task Planner 任务拆解]
+    B --> C[Intent Router 子任务分类]
+    C --> D[Parameter Completeness Checker]
+    D --> E{参数是否齐全}
+    E -- 否 --> F[从 Memory SQL Default 自动补齐]
+    E -- 是 --> G[Prerequisite Resolver]
+    F --> G
+    G --> H{前置结果是否齐全}
+    H -- 否 --> I[自动触发依赖 Skill]
+    H -- 是 --> J[执行当前 Skill 与 Tool]
+    I --> J
+    J --> K[返回结构化结果]
+    K --> L[Consistency Checker]
+    L --> M[LLM 组织最终回答]
+```
+
+这条链路的核心目标不是增加流程复杂度，而是用更强的流程控制减少漏答、补值错误和文案不一致问题。
 
 ---
 
 ## 4. 系统模块设计
+
+## 4.0 Orchestration Layer：任务规划与流程守卫
+
+这一层位于 `Skill Dispatcher` 之前，负责把用户原始问题转成“可执行、可校验、可补齐”的任务链路，是提升题目契合度与鲁棒性的关键。
+
+### 4.0.1 Task Planner：任务拆解器
+
+#### 目标
+
+将用户问题先拆解成一组有顺序的标准子任务，特别适合处理：
+
+1. 复合问题，例如“先分析偏好，再算缺口，再给配置建议”。
+2. 多轮追问，例如“按前面目标重新算，并同步更新建议书”。
+3. 高层目标问题，例如“直接生成完整养老建议书”。
+
+#### 输出格式
+
+```json
+{
+  "customer_id": "V500001",
+  "tasks": [
+    {"step": 1, "type": "customer_profile"},
+    {"step": 2, "type": "behavior_analysis"},
+    {"step": 3, "type": "retirement_calculation"},
+    {"step": 4, "type": "allocation_planning"},
+    {"step": 5, "type": "proposal_generation"}
+  ]
+}
+```
+
+#### 价值
+
+1. 将养老规划 Agent 从“单问题应答”提升为“围绕养老规划 SOP 的任务执行器”。
+2. 避免单纯依赖关键词路由造成漏步骤。
+3. 便于多轮会话中复用已有中间结果。
+
+### 4.0.2 Parameter Completeness Checker：参数完备性检查器
+
+#### 目标
+
+在进入测算或配置前，先检查参数是否完整，并显式区分参数来源。
+
+#### 参数来源优先级
+
+1. `Profile Memory / SQL`
+   客观事实优先从数据库或缓存读取。
+2. `Preference Memory`
+   稳定目标和长期偏好从长期记忆读取。
+3. `Scenario Memory`
+   当前轮临时假设仅用于本轮测算。
+4. `Default Config`
+   题目默认参数，例如通胀率、寿命假设、收益率。
+
+#### 输出格式
+
+```json
+{
+  "ready_params": {"age": 22, "gender": "男", "monthly_expend": 4000},
+  "fillable_from_memory": ["retirement_goal_amount"],
+  "fillable_from_sql": ["net_asset", "pension"],
+  "fillable_from_default": ["inflation_annual"],
+  "must_ask_user": []
+}
+```
+
+#### 价值
+
+1. 避免模型隐式补值。
+2. 保证数值链路口径一致。
+3. 为后续解释性回复和建议书成文提供可靠来源。
+
+### 4.0.3 Prerequisite Resolver：前置条件自动补齐器
+
+#### 目标
+
+在当前 Skill 执行前检查依赖结果是否存在，若不存在则自动补跑前置 Skill。
+
+#### 依赖关系示例
+
+1. `customer_profile`
+   仅依赖 `customer_id`。
+2. `behavior_analysis`
+   依赖 `customer_id`。
+3. `retirement_calculation`
+   依赖 `profile`。
+4. `allocation_planning`
+   依赖 `profile + behavior_analysis + retirement_calculation`。
+5. `proposal_generation`
+   依赖 `profile + behavior_analysis + retirement_calculation + allocation_planning`。
+
+#### 价值
+
+1. 用户无需显式知道内部执行顺序。
+2. 建议书和配置方案天然具备前序依据。
+3. 能显著降低复杂问题中的状态缺失问题。
+
+### 4.0.4 Consistency Checker：一致性校验器
+
+#### 目标
+
+在最终答案输出前，对结构化结果和文案草稿做程序级一致性校验。
+
+#### 校验范围
+
+1. `数值一致性`
+   关键金额、比例、年限必须与工具结果一致。
+2. `产品一致性`
+   推荐产品必须属于题目给定产品库。
+3. `风险一致性`
+   推荐方案必须满足客户风险等级和生命周期约束。
+4. `关注点一致性`
+   建议书必须显式回应前序对话中的关注点。
+
+#### 价值
+
+1. 拦截“工具结果正确，但生成文案走样”的问题。
+2. 尤其适合建议书类高分题型。
+3. 进一步提升最终输出的可信度和严谨性。
 
 ## 4.1 Intent Router：问题识别与路由
 
@@ -142,6 +459,7 @@ Answer Composer / Proposal Generator
 
 ```json
 {
+  "task_id": "step_3",
   "intent": "retirement_calculation",
   "customer_id": "V500001",
   "requires_sql": true,
@@ -377,6 +695,16 @@ pension_raise_after_retirement: false
 return_skewness: 0
 ```
 
+所有运行时参数在进入公式引擎前，必须先经过 `Parameter Completeness Checker`，并记录参数来源，例如：
+
+```json
+{
+  "monthly_expend": {"value": 4000, "source": "profile_memory"},
+  "inflation_annual": {"value": 0.02, "source": "default_config"},
+  "retirement_goal_amount": {"value": 15000, "source": "preference_memory"}
+}
+```
+
 ### 4.5.3 核心计算函数
 
 #### 1. 退休年龄计算
@@ -494,6 +822,11 @@ return_skewness: 0
 4. 养老金缺口。
 5. 行为偏好产品。
 6. 会话中记录的客户关注点，例如流动性、稳健、收益、长寿风险。
+
+上述输入在进入配置求解前，需要先经过：
+
+1. `Parameter Completeness Checker` 检查是否有缺失字段。
+2. `Prerequisite Resolver` 检查是否已具备画像、偏好分析和缺口测算结果。
 
 ### 4.6.3 产品库标准化
 
@@ -620,6 +953,13 @@ return_skewness: 0
 2. 不会遗漏前面对话中的关键信息。
 3. 输出更短、更稳、更省 Token。
 
+在最终输出前，再经过 `Consistency Checker` 做一次校验，确保：
+
+1. 建议书中的金额、比例、年限与工具结果完全一致。
+2. 推荐产品均来自题目给定产品库。
+3. 风险等级和推荐组合不存在冲突。
+4. 前序对话中的关注点被显式回应。
+
 ### 4.7.4 建议书模板示例
 
 ```text
@@ -658,6 +998,13 @@ return_skewness: 0
 ## 5. Skill 设计
 
 建议将 Agent 拆成以下 5 个 Skill：
+
+在这 5 个 Skill 之上，再增加 4 个流程控制模块：
+
+1. `task_planner`
+2. `parameter_completeness_checker`
+3. `prerequisite_resolver`
+4. `consistency_checker`
 
 ### 5.1 `skill_customer_profile`
 
@@ -716,16 +1063,19 @@ return_skewness: 0
 
 以“客户 V500001 现在年龄多大”为例：
 
-1. Router 识别为 `基础查询类`。
-2. 调用 `skill_customer_profile`。
-3. 生成 SQL：
+1. `Task Planner` 识别这是单子任务问题。
+2. Router 识别为 `基础查询类`。
+3. `Prerequisite Resolver` 判断只需客户画像查询，无额外依赖。
+4. 调用 `skill_customer_profile`。
+5. 生成 SQL：
 
 ```sql
 SELECT age FROM base_table WHERE user_id='V500001';
 ```
 
-4. 返回结果 `22`。
-5. Answer Composer 输出“客户 V500001 当前 22 岁。”
+6. 返回结果 `22`。
+7. `Consistency Checker` 检查回答中年龄字段与 SQL 结果一致。
+8. Answer Composer 输出“客户 V500001 当前 22 岁。”
 
 特点：
 
@@ -737,14 +1087,18 @@ SELECT age FROM base_table WHERE user_id='V500001';
 
 以“客户 V500001 在退休时最低需要积攒多少钱，才能维持消费水平不下降”为例：
 
-1. Router 识别为 `养老测算类`。
-2. 查询 `monthly_expend、pension、enterprise_ann、age、gender`。
-3. 计算退休年龄与距退休月数。
-4. 计算退休首月支出。
-5. 计算退休后总支出现值。
-6. 计算养老金现值和企业年金。
-7. 计算最低所需储备。
-8. 输出取整后的金额和简要说明。
+1. `Task Planner` 识别为单测算任务。
+2. Router 识别为 `养老测算类`。
+3. `Parameter Completeness Checker` 列出所需参数。
+4. 从 `Profile Memory / SQL / Default Config` 自动补齐 `monthly_expend、pension、enterprise_ann、age、gender、inflation_annual`。
+5. `Prerequisite Resolver` 确认已具备画像信息，无需补跑其他 Skill。
+6. 计算退休年龄与距退休月数。
+7. 计算退休首月支出。
+8. 计算退休后总支出现值。
+9. 计算养老金现值和企业年金。
+10. 计算最低所需储备。
+11. `Consistency Checker` 检查最终金额与工具结果一致。
+12. 输出取整后的金额和简要说明。
 
 ## 6.3 流程三：多轮追问与上下文继承
 
@@ -764,17 +1118,19 @@ SELECT age FROM base_table WHERE user_id='V500001';
 
 ## 6.4 流程四：建议书生成
 
-1. Router 识别为 `建议书生成类`。
-2. 检查会话内是否已有部分结果，优先复用。
-3. 若缺少关键信息，则自动补查或补算。
-4. 聚合：
+1. `Task Planner` 将目标拆解为 `画像 -> 偏好 -> 测算 -> 配置 -> 建议书`。
+2. Router 将每个子任务路由到对应 Skill。
+3. `Prerequisite Resolver` 检查会话内是否已有部分结果，优先复用。
+4. 若缺少关键信息，则自动补查或补算。
+5. 聚合：
    - 客户画像
    - 客户目标
    - 行为偏好
    - 退休测算
    - 配置结果
-5. 使用模板化方式生成建议书。
-6. 输出正式文本。
+6. 使用模板化方式生成建议书草稿。
+7. `Consistency Checker` 检查数值、产品、风险约束和关注点引用是否一致。
+8. 输出正式文本。
 
 ---
 
@@ -812,8 +1168,10 @@ SELECT age FROM base_table WHERE user_id='V500001';
 
 1. 常见问题走模板 SQL，不走自由生成。
 2. 常用客户画像做短期缓存。
-3. 路由和工具调用尽量单跳完成，避免多 Agent 串行。
-4. 建议书生成时复用已算结果，避免再次查库和重复计算。
+3. `Task Planner` 只在复合问题时拆任务，简单问题保持单跳执行。
+4. `Parameter Completeness Checker` 仅在测算和配置前触发，避免无效检查。
+5. `Prerequisite Resolver` 优先复用已有结果，避免重复查库和重复计算。
+6. 建议书生成时复用已算结果，避免再次查库和重复计算。
 
 ### 8.2 Token 优化
 
@@ -859,6 +1217,11 @@ project/
 │  ├─ retirement_calc.py
 │  ├─ allocation_planning.py
 │  └─ proposal_writer.py
+├─ orchestrators/
+│  ├─ task_planner.py
+│  ├─ parameter_checker.py
+│  ├─ prerequisite_resolver.py
+│  └─ consistency_checker.py
 ├─ tools/
 │  ├─ sql_executor.py
 │  ├─ sql_templates.py
@@ -888,10 +1251,13 @@ def answer(question: str, session_id: str) -> str:
 
 ```python
 {
+  "task_plan": [...],
   "intent": "...",
   "customer_id": "...",
+  "param_status": {...},
   "tool_results": {...},
   "memory_updates": {...},
+  "consistency_check": {...},
   "final_answer": "..."
 }
 ```
@@ -930,6 +1296,34 @@ def answer(question: str, session_id: str) -> str:
 1. 使用固定章节模板。
 2. 每个章节都绑定结构化槽位。
 3. 输出重点强调“目标、缺口、偏好、配置、结论”。
+
+### 10.6 风险六：复合问题漏步骤
+
+应对：
+
+1. 在 Router 前增加 `Task Planner`。
+2. 对建议书、配置方案等复杂任务强制生成子任务列表。
+
+### 10.7 风险七：参数缺失时模型自由补值
+
+应对：
+
+1. 增加 `Parameter Completeness Checker`。
+2. 明确参数来源优先级为 `SQL/Memory > Default > Ask User`。
+
+### 10.8 风险八：前置结果不存在导致建议失真
+
+应对：
+
+1. 增加 `Prerequisite Resolver`。
+2. 自动补跑画像、偏好分析、缺口测算等依赖步骤。
+
+### 10.9 风险九：最终文案与工具结果不一致
+
+应对：
+
+1. 增加 `Consistency Checker`。
+2. 对金额、产品、风险等级、关注点引用做程序化校验。
 
 ### 10.5 风险五：查询慢
 
@@ -996,13 +1390,14 @@ def answer(question: str, session_id: str) -> str:
 
 ## 13. 方案总结
 
-本方案的核心思想是：`让大模型负责理解，让数据库负责取数，让公式引擎负责计算，让规则引擎负责配置，让模板系统负责成文。`
+本方案的核心思想是：`让大模型负责任务拆解、理解与成文，让数据库负责取数，让公式引擎负责计算，让规则引擎负责配置，让流程守卫模块负责补齐与校验。`
 
 相较于纯大模型问答方案，这套实现方式更适合本题，原因在于：
 
 1. 更符合题目“SQL 访问数据库”的硬性要求。
 2. 更能保证数值稳定性和误差控制。
 3. 更容易处理多轮会话中的偏好记忆与临时假设。
-4. 更容易在回答质量、时延和 Token 成本之间取得平衡。
+4. 更能处理复合问题中的任务拆解、参数补齐和依赖补跑。
+5. 更容易在回答质量、时延和 Token 成本之间取得平衡。
 
 如果按该方案实现，Agent 将能够覆盖赛题中的主要高频问法，并在建议书类高分题中形成明显优势，是一套兼顾竞赛得分和真实业务可落地性的养老规划 Agent 建设方案。

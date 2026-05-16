@@ -172,7 +172,9 @@ class ToolExecutor:
     ) -> dict[str, Any]:
         metric = str(params.get("metric", "gap"))
         agg = str(params.get("agg", "value"))
-        cid = params.get("customer_id") or self.memory.get_session(session_id).customer_id
+        cid = params.get("customer_id")
+        if cid is None and agg == "value":
+            cid = self.memory.get_session(session_id).customer_id
 
         if cid:
             result = self.retirement_skill.calculate(session_id, str(cid))

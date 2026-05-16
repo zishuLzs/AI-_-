@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any
 
 from llm.client import LLMClient
-from llm.prompts import COMPOSER_SYSTEM_PROMPT, PROPOSAL_SYSTEM_PROMPT
+from llm.prompts import PROPOSAL_SYSTEM_PROMPT, RESPONDER_SYSTEM_PROMPT
 from llm.schemas import PlannerOutput
 
 logger = logging.getLogger(__name__)
@@ -40,31 +40,23 @@ class LLMComposer:
         plan: PlannerOutput,
         tool_results: dict[str, Any],
     ) -> str:
-        payload = {
-            "question": question,
-            "intent": plan.intent,
-            "case_tag": plan.case_tag,
-            "answer_mode": plan.answer_mode,
-            "semantic_plan": self._serialize_semantic_plan(plan),
-            "tool_results": tool_results,
-        }
-        style_hint = self._build_case_style_hint(plan.case_tag)
+        fallback = self._deterministic_answer(question, plan, tool_results, "")
+        payload = self._build_answer_context(question, plan, tool_results, fallback)
         user_prompt = (
-            f"根据以下结构化数据回答问题。\n"
-            f"答题风格要求：{style_hint}\n"
+            f"请根据以下执行证据回答问题。\n"
             f"{json.dumps(payload, ensure_ascii=False)}\n"
             f"只输出最终答案。"
         )
         messages = [
-            {"role": "system", "content": COMPOSER_SYSTEM_PROMPT},
+            {"role": "system", "content": RESPONDER_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ]
         try:
             llm_answer = self.llm.chat(messages, temperature=0.0, max_tokens=512).strip()
-            return self._deterministic_answer(question, plan, tool_results, llm_answer)
+            return self._finalize_short_answer(question, plan, tool_results, llm_answer, fallback)
         except Exception as e:
             logger.error("Composer failed, falling back to programmatic short answer: %s", e)
-            return self._fallback_short(question, plan, tool_results)
+            return fallback or self._fallback_short(question, plan, tool_results)
 
     def _compose_proposal(self, tool_results: dict[str, Any]) -> str:
         payload = tool_results.get("generate_proposal_payload", tool_results)
@@ -131,6 +123,156 @@ class LLMComposer:
     @staticmethod
     def _proposal_has_required_sections(text: str) -> bool:
         return sum(1 for s in _PROPOSAL_REQUIRED_SECTIONS if s in text) >= _PROPOSAL_MIN_SECTIONS
+
+    def _build_answer_context(
+        self,
+        question: str,
+        plan: PlannerOutput,
+        tool_results: dict[str, Any],
+        fallback_answer: str,
+    ) -> dict[str, Any]:
+        return {
+            "question": question,
+            "intent": plan.intent,
+            "case_tag": plan.case_tag,
+            "answer_mode": plan.answer_mode,
+            "style_hint": self._build_case_style_hint(plan.case_tag),
+            "semantic_plan": self._serialize_semantic_plan(plan),
+            "execution_evidence": self._extract_execution_evidence(plan, tool_results),
+            "tool_results": tool_results,
+            "fallback_answer": fallback_answer,
+        }
+
+    def _extract_execution_evidence(
+        self,
+        plan: PlannerOutput,
+        tool_results: dict[str, Any],
+    ) -> dict[str, Any]:
+        evidence: dict[str, Any] = {}
+        for name, result in tool_results.items():
+            if isinstance(result, dict):
+                if "result" in result:
+                    evidence[name] = {"result": result.get("result")}
+                    continue
+                if name == "get_profile":
+                    evidence[name] = {
+                        "age": result.get("age"),
+                        "risk_level": result.get("risk_level"),
+                        "net_asset": result.get("net_asset"),
+                        "monthly_income": result.get("monthly_income"),
+                        "monthly_expend": result.get("monthly_expend"),
+                        "monthly_saving": result.get("monthly_saving"),
+                        "pension": result.get("pension"),
+                        "enterprise_ann": result.get("enterprise_ann"),
+                    }
+                    continue
+                if name == "calculate_retirement":
+                    evidence[name] = {
+                        "retirement_duration_text": result.get("retirement_duration_text"),
+                        "retirement_monthly_expend": result.get("retirement_monthly_expend"),
+                        "required_asset_at_retirement": result.get("required_asset_at_retirement"),
+                        "accumulated_asset_at_retirement": result.get("accumulated_asset_at_retirement"),
+                        "gap": result.get("gap"),
+                    }
+                    continue
+                if name == "build_allocation":
+                    evidence[name] = {
+                        "allocation": result.get("allocation"),
+                        "portfolio_return": result.get("portfolio_return"),
+                        "portfolio_risk": result.get("portfolio_risk"),
+                        "retirement_asset_projection": result.get("retirement_asset_projection"),
+                        "covers_gap": result.get("covers_gap"),
+                    }
+                    continue
+            evidence[name] = result
+
+        if plan.case_tag == "allocation_metric" and "build_allocation" in tool_results:
+            allocation = tool_results["build_allocation"]
+            if isinstance(allocation, dict):
+                evidence["allocation_metric_value"] = {
+                    "portfolio_return": allocation.get("portfolio_return"),
+                    "portfolio_risk": allocation.get("portfolio_risk"),
+                    "retirement_asset_projection": allocation.get("retirement_asset_projection"),
+                }
+        return evidence
+
+    def _finalize_short_answer(
+        self,
+        question: str,
+        plan: PlannerOutput,
+        tool_results: dict[str, Any],
+        llm_answer: str,
+        fallback: str,
+    ) -> str:
+        if not llm_answer:
+            return fallback or self._fallback_short(question, plan, tool_results)
+        normalized = self._normalize_answer_text(llm_answer)
+        if not normalized or "信息不完整" in normalized or "抱歉" in normalized:
+            return fallback or self._fallback_short(question, plan, tool_results)
+        if self._is_llm_answer_acceptable(plan.case_tag, llm_answer, fallback):
+            return llm_answer.strip()
+        return fallback or self._fallback_short(question, plan, tool_results)
+
+    @classmethod
+    def _is_llm_answer_acceptable(cls, case_tag: str, llm_answer: str, fallback: str) -> bool:
+        if not fallback:
+            return bool(llm_answer.strip())
+
+        llm_norm = cls._normalize_answer_text(llm_answer)
+        fallback_norm = cls._normalize_answer_text(fallback)
+        if not llm_norm:
+            return False
+        if llm_norm == fallback_norm or fallback_norm in llm_norm or llm_norm in fallback_norm:
+            return True
+
+        if case_tag in {
+            "allocation_goal_check",
+            "allocation_max_return",
+            "allocation_min_risk",
+            "retirement_scenario_inflation",
+            "proposal_full",
+        }:
+            return cls._shares_core_fact(llm_norm, fallback_norm)
+
+        return cls._shares_core_fact(llm_norm, fallback_norm)
+
+    @staticmethod
+    def _normalize_answer_text(text: str) -> str:
+        return (
+            text.replace(" ", "")
+            .replace("，", ",")
+            .replace("：", ":")
+            .replace("。", "")
+            .strip()
+        )
+
+    @classmethod
+    def _shares_core_fact(cls, llm_norm: str, fallback_norm: str) -> bool:
+        ids = re.findall(r"[VT]\d{6}", fallback_norm, flags=re.IGNORECASE)
+        if ids:
+            return all(cid.upper() in llm_norm.upper() for cid in ids)
+
+        percents = re.findall(r"\d+(?:\.\d+)?%", fallback_norm)
+        if percents:
+            return all(p in llm_norm for p in percents)
+
+        amounts = re.findall(r"\d+(?:\.\d+)?元", fallback_norm)
+        if amounts:
+            return all(amount in llm_norm for amount in amounts)
+
+        durations = re.findall(r"\d+年\d+个月", fallback_norm)
+        if durations:
+            return all(duration in llm_norm for duration in durations)
+
+        keywords = [
+            keyword
+            for keyword in ("现金理财", "定期存款", "短债类产品", "固收+产品", "权益类产品", "年金险", "不存在资金缺口")
+            if keyword in fallback_norm
+        ]
+        if keywords:
+            return all(keyword.replace(" ", "") in llm_norm for keyword in keywords)
+
+        return False
 
     def _deterministic_answer(
         self,

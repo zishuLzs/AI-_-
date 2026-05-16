@@ -208,6 +208,23 @@ class LocalPlanner:
                     aggregation="count",
                     filters=[FilterCondition("age", "<", int(age_lt.group(1)))],
                 )
+        if customer_id:
+            if any(token in question for token in ("退休金", "养老金")):
+                return QuerySemantics(metric="pension", aggregation="value")
+            if "企业年金" in question:
+                return QuerySemantics(metric="enterprise_ann", aggregation="value")
+            if "净资产" in question:
+                return QuerySemantics(metric="net_asset", aggregation="value")
+            if "结余" in question or "能攒" in question or "攒钱" in question:
+                return QuerySemantics(metric="monthly_saving", aggregation="value")
+            if "月支出" in question or ("支出" in question and "退休" not in question):
+                return QuerySemantics(metric="monthly_expend", aggregation="value")
+            if "月收入" in question or ("收入" in question and "收益" not in question):
+                return QuerySemantics(metric="monthly_income", aggregation="value")
+            if "风险" in question:
+                return QuerySemantics(metric="risk_level", aggregation="value")
+            if any(token in question for token in ("年龄", "几岁", "多大")):
+                return QuerySemantics(metric="age", aggregation="value")
         return QuerySemantics(metric="age", aggregation="count")
 
     def _behavior_semantics(self, question: str, customer_id: str | None) -> QuerySemantics:

@@ -149,17 +149,48 @@ class LLMPlanner:
     @staticmethod
     def _violates_question_guardrail(question: str, plan: PlannerOutput) -> bool:
         if (
+            any(token in question for token in ("退休金", "养老金"))
+            and not any(
+                token in question
+                for token in ("缺口", "积攒", "攒", "退休后", "退休时", "退休当月", "距离退休", "离退休", "还有多久")
+            )
+            and plan.intent != "profile"
+        ):
+            return True
+        if (
             any(token in question for token in ("全投", "全买", "只投", "全部投资"))
             and any(token in question for token in ("够不够", "能否达成", "目标够不够", "还差多少钱"))
             and plan.case_tag not in {"allocation_goal_check", "product_query"}
         ):
             return True
+        if any(token in question for token in ("最小化风险波动", "最小风险方案", "尽量稳一点")):
+            objective = (
+                plan.memory_update.preferences.get("allocation_objective")
+                or plan.memory_update.scenario.get("allocation_objective")
+            )
+            if objective != "minimize_risk":
+                return True
+        if any(token in question for token in ("收益最大化", "最大化投资收益")):
+            objective = (
+                plan.memory_update.preferences.get("allocation_objective")
+                or plan.memory_update.scenario.get("allocation_objective")
+            )
+            if objective != "maximize_return":
+                return True
         if any(token in question for token in ("寿命", "长寿")) and any(
             token in question for token in ("补哪类产品", "增加什么产品", "增加什么配置")
         ):
             return plan.case_tag != "allocation_longevity_adjust"
         if "未来一个星期" in question and "购买" in question:
             return plan.case_tag != "allocation_prediction"
+        if any(token in question for token in ("谁的月收入最高", "谁的收入最高")):
+            return plan.case_tag != "profile_ranking"
+        if any(token in question for token in ("多少客户年龄", "净资产在", "月支出不超过", "月支出在", "月支出低于", "结余", "风险等级至少", "风险评级在R")):
+            return plan.intent != "profile" or plan.case_tag not in {"profile_count", "profile_aggregate_value"}
+        if "看权益" in question and any(token in question for token in ("多少次", "几次")):
+            return plan.case_tag != "behavior_stat"
+        if any(token in question for token in ("离达标还差多少钱", "距离达标还差多少钱")):
+            return plan.case_tag != "product_query"
         if "谁的" in question and any(token in question for token in ("购买", "收藏", "浏览")) and "次数最多" in question:
             return plan.case_tag != "behavior_ranking"
         if any(token in question for token in ("发生过购买行为的客户有多少个", "发生过收藏行为的客户有多少个")):
