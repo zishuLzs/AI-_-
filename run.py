@@ -32,14 +32,12 @@ from llm.schemas import PlannerOutput
 from orchestrator.composer import LLMComposer
 from orchestrator.executor import ToolExecutor, ToolExecutionFailure
 from orchestrator.failures import FailureCategory, format_user_failure
-from orchestrator.local_planner import LocalPlanner
-from orchestrator.planner import LLMPlanner, PlannerFailure
+from orchestrator.planner import LLMPlanner
 from skills.allocation_planning import AllocationPlanningSkill
 from skills.behavior_analysis import BehaviorAnalysisSkill
 from skills.customer_profile import CustomerProfileSkill
 from skills.retirement_calc import RetirementCalculationSkill
 from tools.memory_manager import MemoryManager
-from tools.router import IntentRouter
 from tools.sql_executor import SQLExecutor
 
 
@@ -63,7 +61,6 @@ def _build_agent() -> "PensionPlanningAgent":
         DEFAULT_CONFIG, profile_skill, behavior_skill,
         retirement_skill, memory_manager,
     )
-    router = IntentRouter(memory_manager)
 
     planner = LLMPlanner(llm_client, memory_manager)
     executor = ToolExecutor(
@@ -77,7 +74,6 @@ def _build_agent() -> "PensionPlanningAgent":
         executor=executor,
         composer=composer,
         memory_manager=memory_manager,
-        router=router,
     )
 
 
@@ -96,77 +92,21 @@ class PensionPlanningAgent:
         executor: ToolExecutor,
         composer: LLMComposer,
         memory_manager: MemoryManager,
-        router: IntentRouter,
     ) -> None:
         self.planner = planner
         self.executor = executor
         self.composer = composer
         self.memory_manager = memory_manager
-        self.router = router
-        self.local_planner = LocalPlanner(router)
-
-    @staticmethod
-    def _ensure_required_tools(plan: "PlannerOutput", session_id: str) -> None:
-        """Inject mandatory tools the LLM planner may have omitted."""
-        from llm.schemas import ToolCall
-
-        tool_names = {tc.name for tc in plan.tool_calls}
-        if tool_names & {
-            "profile_query",
-            "behavior_query",
-            "retirement_query",
-            "product_query",
-        }:
-            return
-
-        def _ensure(name: str, params: dict | None = None) -> None:
-            if name not in tool_names:
-                plan.tool_calls.append(ToolCall(name=name, params=params or {}))
-
-        if plan.intent == "profile" and plan.case_tag == "profile_single_value":
-            _ensure("get_profile")
-        elif plan.intent == "retirement" and plan.case_tag in {
-            "retirement_duration",
-            "retirement_monthly_spend",
-            "retirement_required_asset",
-            "retirement_accumulated_asset",
-            "retirement_scenario_inflation",
-        }:
-            _ensure("get_profile")
-            _ensure("calculate_retirement")
-        elif plan.intent == "allocation" and plan.case_tag in {
-            "allocation_max_return",
-            "allocation_min_risk",
-            "allocation_metric",
-        }:
-            _ensure("get_profile")
-            _ensure("analyze_behavior_single")
-            _ensure("calculate_retirement")
-            _ensure("build_allocation")
-        elif plan.intent == "allocation" and plan.case_tag == "allocation_prediction":
-            _ensure("analyze_behavior_single")
-        elif plan.intent == "proposal":
-            _ensure("get_profile")
-            _ensure("analyze_behavior_single")
-            _ensure("calculate_retirement")
-            _ensure("build_allocation")
-            _ensure("generate_proposal_payload")
-        elif plan.intent == "behavior" and plan.case_tag == "behavior_single_preference":
-            _ensure("analyze_behavior_single")
 
     def answer(self, question: str, session_id: str = "default") -> str:
         # Step 1: LLM Planner — intent, params, tool plan
         try:
             plan = self.planner.plan(question, session_id)
-        except PlannerFailure as e:
-            logger.error("Planner failure in answer(), switching to local planner: %s", e.record.detail)
-            plan = self.local_planner.build(question, session_id)
         except Exception as e:
-            logger.error("Planner unavailable, switching to local planner: %s", e)
-            plan = self.local_planner.build(question, session_id)
+            logger.error("Planner unavailable: %s", e)
+            return format_user_failure(FailureCategory.PLANNER_SCHEMA_ERROR)
 
-        # Step 2: Ensure plan has required tools for its intent
-        self._ensure_required_tools(plan, session_id)
+        # Step 2: Apply narrow scenario overrides for legacy fallback safety
         self._apply_question_overrides(plan, question)
 
         # Step 3: Apply memory updates and execute tools

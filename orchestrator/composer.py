@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 import json
 import logging
 import re
@@ -44,6 +45,7 @@ class LLMComposer:
             "intent": plan.intent,
             "case_tag": plan.case_tag,
             "answer_mode": plan.answer_mode,
+            "semantic_plan": self._serialize_semantic_plan(plan),
             "tool_results": tool_results,
         }
         style_hint = self._build_case_style_hint(plan.case_tag)
@@ -281,6 +283,12 @@ class LLMComposer:
                 return str(result["result"])
 
         return llm_answer.strip()
+
+    @staticmethod
+    def _serialize_semantic_plan(plan: PlannerOutput) -> dict[str, Any] | None:
+        if plan.semantic_plan is None:
+            return None
+        return asdict(plan.semantic_plan)
 
     def _fallback_proposal(self, payload: dict[str, Any]) -> str:
         profile = payload.get("profile", {})

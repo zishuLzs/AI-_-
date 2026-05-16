@@ -4,16 +4,17 @@ import logging
 from typing import Any
 
 from llm.schemas import (
-    ANSWER_MODE_ENUM,
-    CASE_TAG_ENUM,
-    INTENT_ENUM,
-    TOOL_WHITELIST,
+    DOMAIN_ENUM,
+    SCOPE_ENUM,
+    TASK_ENUM,
     VALID_ACTION_TYPES,
     VALID_METRICS,
     VALID_PRODUCTS,
-    PlannerOutput,
+    CustomerScope,
+    FilterCondition,
     MemoryUpdate,
-    ToolCall,
+    QuerySemantics,
+    SemanticPlan,
 )
 
 logger = logging.getLogger(__name__)
@@ -28,38 +29,52 @@ class PlanValidationError(Exception):
 
 class PlanValidator:
     @staticmethod
-    def validate(data: dict[str, Any]) -> PlannerOutput:
+    def validate(data: dict[str, Any]) -> SemanticPlan:
         errors: list[str] = []
 
-        intent = data.get("intent", "")
-        if intent not in INTENT_ENUM:
-            errors.append(f"invalid intent: {intent}")
+        task = str(data.get("task", data.get("intent", "fallback")))
+        if task not in TASK_ENUM:
+            task = "fallback"
 
-        answer_mode = data.get("answer_mode", "short")
-        if answer_mode not in ANSWER_MODE_ENUM:
-            answer_mode = "short"
+        domain = str(data.get("domain", data.get("intent", "fallback")))
+        if domain not in DOMAIN_ENUM:
+            domain = "fallback"
 
-        case_tag = data.get("case_tag", "fallback_unknown")
-        if case_tag not in CASE_TAG_ENUM:
-            case_tag = "fallback_unknown"
+        response_style = str(data.get("response_style", data.get("answer_mode", "short")))
+        if response_style not in {"short", "normal", "proposal"}:
+            response_style = "short"
 
-        customer_id = data.get("customer_id")
+        scope_data = data.get("customer_scope", {})
+        if not isinstance(scope_data, dict):
+            scope_data = {}
+        scope_type = str(scope_data.get("type", "single"))
+        if scope_type not in SCOPE_ENUM:
+            scope_type = "single"
+        customer_id = scope_data.get("customer_id")
         if customer_id is not None and not isinstance(customer_id, str):
-            errors.append("customer_id must be string or null")
+            errors.append("customer_scope.customer_id must be string or null")
 
-        memory_update = PlanValidator._validate_memory_update(data.get("memory_update", {}))
-        tool_calls = PlanValidator._validate_tool_calls(data.get("tool_calls", []))
+        mu_payload = data.get("memory_update", {})
+        if not isinstance(mu_payload, dict):
+            mu_payload = {}
+        if "preferences" not in mu_payload and isinstance(data.get("preferences"), dict):
+            mu_payload["preferences"] = data.get("preferences", {})
+        if "scenario" not in mu_payload and isinstance(data.get("scenario"), dict):
+            mu_payload["scenario"] = data.get("scenario", {})
+        mu = PlanValidator._validate_memory_update(mu_payload)
+        semantics = PlanValidator._validate_query_semantics(data.get("query_semantics", {}))
 
         if errors:
             raise PlanValidationError("planner_schema_error", "; ".join(errors))
 
-        return PlannerOutput(
-            intent=intent,
-            customer_id=customer_id,
-            memory_update=memory_update,
-            tool_calls=tool_calls,
-            answer_mode=answer_mode,
-            case_tag=case_tag,
+        return SemanticPlan(
+            task=task,
+            domain=domain,
+            customer_scope=CustomerScope(type=scope_type, customer_id=customer_id),
+            query_semantics=semantics,
+            memory_update=mu,
+            response_style=response_style,
+            raw_notes=str(data.get("notes", "")),
         )
 
     @staticmethod
@@ -112,99 +127,59 @@ class PlanValidator:
         return MemoryUpdate(preferences=preferences, scenario=scenario_clean)
 
     @staticmethod
-    def _validate_tool_calls(tc_data: Any) -> list[ToolCall]:
-        if not isinstance(tc_data, list):
-            return []
-        result: list[ToolCall] = []
-        for tc in tc_data:
-            if not isinstance(tc, dict):
-                continue
-            name = tc.get("name", "")
-            if name not in TOOL_WHITELIST:
-                logger.warning("Dropping unknown tool: '%s'", name)
-                continue
-            params = tc.get("params", {})
-            if not isinstance(params, dict):
-                params = {}
-            PlanValidator._validate_tool_params(name, params)
-            result.append(ToolCall(name=name, params=params))
-        return result
+    def _validate_query_semantics(qs_data: Any) -> QuerySemantics:
+        if not isinstance(qs_data, dict):
+            return QuerySemantics()
 
-    @staticmethod
-    def _validate_tool_params(name: str, params: dict[str, Any]) -> None:
-        if name in ("get_profile", "analyze_behavior_single", "calculate_retirement",
-                     "build_allocation", "generate_proposal_payload", "product_query"):
-            if "customer_id" in params and not isinstance(params["customer_id"], str):
-                raise PlanValidationError(
-                    "planner_invalid_tool",
-                    f"{name}: customer_id must be string",
-                )
-        if name == "product_query":
-            product = params.get("product", "")
-            if product and product not in VALID_PRODUCTS:
-                raise PlanValidationError(
-                    "planner_invalid_tool",
-                    f"product_query: invalid product '{product}'",
-                )
+        metric = str(qs_data.get("metric", ""))
+        aggregation = str(qs_data.get("aggregation", "value"))
+        if aggregation not in {"value", "count", "avg", "sum", "median", "argmax_customer", "list_customer_ids"}:
+            aggregation = "value"
 
-        if name == "profile_query":
-            field = params.get("field")
-            if field is not None and not isinstance(field, str):
-                raise PlanValidationError(
-                    "planner_invalid_tool",
-                    "profile_query: field must be string",
-                )
-            agg = params.get("agg")
-            if agg is not None and not isinstance(agg, str):
-                raise PlanValidationError(
-                    "planner_invalid_tool",
-                    "profile_query: agg must be string",
-                )
+        if metric and metric not in VALID_METRICS and metric not in {
+            "top_product",
+            "action_count",
+            "customer_count",
+            "max_customer_id",
+            "no_gap",
+            "allocation_plan",
+            "portfolio_return",
+            "portfolio_risk",
+            "retirement_asset_projection",
+            "required_asset",
+            "accumulated_asset",
+            "gap",
+            "duration",
+            "monthly_spend",
+            "feasibility",
+            "shortfall",
+            "adjustment",
+            "longevity_adjust",
+        }:
+            logger.warning("Unrecognized semantic metric: %s", metric)
 
-        if name == "analyze_behavior_aggregate":
-            metric = params.get("metric", "")
-            if metric and metric not in VALID_METRICS:
-                raise PlanValidationError(
-                    "planner_invalid_tool",
-                    f"analyze_behavior_aggregate: invalid metric '{metric}'",
-                )
-            product = params.get("product", "")
-            if product and product not in VALID_PRODUCTS:
-                raise PlanValidationError(
-                    "planner_invalid_tool",
-                    f"analyze_behavior_aggregate: invalid product '{product}'",
-                )
-            action_type = params.get("action_type", "")
-            if action_type and action_type not in VALID_ACTION_TYPES:
-                raise PlanValidationError(
-                    "planner_invalid_tool",
-                    f"analyze_behavior_aggregate: invalid action_type '{action_type}'",
-                )
+        filters_raw = qs_data.get("filters", [])
+        filters: list[FilterCondition] = []
+        if isinstance(filters_raw, list):
+            for item in filters_raw:
+                if not isinstance(item, dict):
+                    continue
+                field = str(item.get("field", ""))
+                op = str(item.get("op", ""))
+                value = item.get("value")
+                filters.append(FilterCondition(field=field, op=op, value=value))
+                if field == "product" and value and str(value) not in VALID_PRODUCTS:
+                    logger.warning("Unrecognized product filter: %s", value)
+                if field == "action_type" and value and str(value) not in VALID_ACTION_TYPES:
+                    logger.warning("Unrecognized action filter: %s", value)
 
-        if name == "behavior_query":
-            product = params.get("product", "")
-            if product and product not in VALID_PRODUCTS:
-                raise PlanValidationError(
-                    "planner_invalid_tool",
-                    f"behavior_query: invalid product '{product}'",
-                )
-            action_type = params.get("action_type", "")
-            if action_type and action_type not in VALID_ACTION_TYPES:
-                raise PlanValidationError(
-                    "planner_invalid_tool",
-                    f"behavior_query: invalid action_type '{action_type}'",
-                )
+        comparison = qs_data.get("comparison")
+        if comparison is not None and not isinstance(comparison, dict):
+            comparison = None
 
-        if name == "retirement_query":
-            metric = params.get("metric")
-            agg = params.get("agg")
-            if metric is not None and not isinstance(metric, str):
-                raise PlanValidationError(
-                    "planner_invalid_tool",
-                    "retirement_query: metric must be string",
-                )
-            if agg is not None and not isinstance(agg, str):
-                raise PlanValidationError(
-                    "planner_invalid_tool",
-                    "retirement_query: agg must be string",
-                )
+        return QuerySemantics(
+            metric=metric,
+            aggregation=aggregation,
+            filters=filters,
+            comparison=comparison,
+        )

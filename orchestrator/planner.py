@@ -8,7 +8,7 @@ from llm.client import LLMClient
 from llm.prompts import PLANNER_SYSTEM_PROMPT
 from llm.schemas import PlannerOutput
 from llm.validator import PlanValidator, PlanValidationError
-from orchestrator.failures import FailureCategory, FailureRecord
+from orchestrator.plan_compiler import PlanCompiler
 from orchestrator.local_planner import LocalPlanner
 from tools.memory_manager import MemoryManager
 from tools.router import IntentRouter
@@ -25,6 +25,7 @@ class LLMPlanner:
         self.llm = llm_client
         self.memory = memory_manager
         self.local_planner = LocalPlanner(IntentRouter(memory_manager))
+        self.compiler = PlanCompiler()
 
     def plan(self, question: str, session_id: str) -> PlannerOutput:
         session_summary = self._build_session_summary(session_id)
@@ -38,59 +39,33 @@ class LLMPlanner:
         try:
             raw_output = self.llm.chat(messages, temperature=0.0, max_tokens=1024)
             data = self.llm._extract_json(raw_output)
-        except (ValueError, json.JSONDecodeError) as e:
-            logger.warning("Planner JSON parse failed, attempting repair: %s", e)
-            raw_output = self._repair(raw_output, str(e))
-            try:
-                data = self.llm._extract_json(raw_output)
-            except Exception:
-                raise LLMPlanner._fail(
-                    FailureCategory.PLANNER_SCHEMA_ERROR,
-                    question,
-                    f"Parse failed after repair: {e}",
-                    raw_output,
-                    session_summary,
-                )
-
-        try:
             plan = PlanValidator.validate(data)
-        except PlanValidationError as e:
-            logger.warning("Planner validation failed, attempting repair: %s", e)
-            raw_output = self._repair(raw_output, e.detail)
+        except (ValueError, json.JSONDecodeError, PlanValidationError) as e:
+            logger.warning("Planner semantic parsing failed, attempting repair: %s", e)
             try:
-                repaired_data = self.llm._extract_json(raw_output)
+                repaired_output = self._repair(raw_output, str(e))
+                repaired_data = self.llm._extract_json(repaired_output)
                 plan = PlanValidator.validate(repaired_data)
-            except Exception:
-                raise LLMPlanner._fail(
-                    FailureCategory.PLANNER_SCHEMA_ERROR,
-                    question,
-                    e.detail,
-                    raw_output,
-                    session_summary,
+            except Exception as repair_error:
+                logger.warning(
+                    "Planner repair failed, using local semantic fallback: %s",
+                    repair_error,
                 )
+                return self._compile_local_fallback(question, session_id)
+        except Exception as e:
+            logger.warning("Planner LLM call failed, using local semantic fallback: %s", e)
+            return self._compile_local_fallback(question, session_id)
 
-        aggregate_safe_tools = {"profile_query", "behavior_query", "retirement_query"}
-        needs_customer = (
-            plan.intent in ("allocation", "proposal")
-            or (
-                plan.intent in ("retirement", "behavior")
-                and not any(tc.name in aggregate_safe_tools for tc in plan.tool_calls)
-            )
-        )
-        if needs_customer and not plan.customer_id:
+        if plan.customer_scope.type in {"single", "followup"} and not plan.customer_scope.customer_id:
             state = self.memory.get_session(session_id)
             if state.customer_id:
-                plan.customer_id = state.customer_id
-            else:
-                raise LLMPlanner._fail(
-                    FailureCategory.PLANNER_MISSING_CUSTOMER_ID,
-                    question,
-                    "customer_id missing for intent requiring one",
-                    raw_output,
-                    session_summary,
-                )
+                plan.customer_scope.customer_id = state.customer_id
 
-        return self.local_planner.merge_with_llm_plan(plan, question, session_id)
+        try:
+            return self.compiler.compile(plan, question)
+        except Exception as e:
+            logger.warning("Planner compile failed, using local semantic fallback: %s", e)
+            return self._compile_local_fallback(question, session_id)
 
     def _repair(self, previous_output: str, error_detail: str) -> str:
         repair_prompt = (
@@ -125,26 +100,6 @@ class LLMPlanner:
             summary["last_case_tag"] = state.last_case_tag
         return summary
 
-    @staticmethod
-    def _fail(
-        category: FailureCategory,
-        question: str,
-        detail: str,
-        raw_output: str,
-        session_summary: dict[str, Any],
-    ) -> "PlannerFailure":
-        record = FailureRecord(
-            category=category,
-            question=question,
-            detail=detail,
-            raw_llm_output=raw_output,
-            session_summary=session_summary,
-        )
-        logger.error("Planner failure: %s | detail=%s", category.value, detail)
-        return PlannerFailure(record)
-
-
-class PlannerFailure(Exception):
-    def __init__(self, record: FailureRecord) -> None:
-        self.record = record
-        super().__init__(f"[{record.category.value}] {record.detail}")
+    def _compile_local_fallback(self, question: str, session_id: str) -> PlannerOutput:
+        semantic = self.local_planner.build_semantic(question, session_id)
+        return self.compiler.compile(semantic, question)

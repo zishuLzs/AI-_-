@@ -225,7 +225,7 @@ class ToolExecutor:
             total_int = int(total.quantize(Decimal("1")))
             return {"result": f"{total_int} 元", "value": str(total_int)}
 
-        if agg == "max_customer_id" and metric == "gap":
+        if agg in {"max_customer_id", "argmax_customer"} and metric == "gap":
             winner = max(
                 totals,
                 key=lambda item: (
@@ -235,13 +235,21 @@ class ToolExecutor:
             )
             return {"result": winner[0], "customer_id": winner[0], "value": str(winner[1].gap)}
 
-        if agg == "list_customer_ids" and metric == "no_gap":
-            customer_ids = [
-                user_id
-                for user_id, result in totals
-                if Decimal(str(result.gap)) <= 0
-            ]
-            return {"result": "、".join(customer_ids), "customer_ids": customer_ids}
+        if agg == "list_customer_ids":
+            if metric == "no_gap":
+                customer_ids = [
+                    user_id
+                    for user_id, result in totals
+                    if Decimal(str(result.gap)) <= 0
+                ]
+                return {"result": "、".join(customer_ids), "customer_ids": customer_ids}
+            if metric == "gap":
+                customer_ids = [
+                    user_id
+                    for user_id, result in totals
+                    if Decimal(str(result.gap)) > 0
+                ]
+                return {"result": "、".join(customer_ids), "customer_ids": customer_ids}
 
         raise ValueError(f"Unsupported retirement aggregate: agg={agg}, metric={metric}")
 

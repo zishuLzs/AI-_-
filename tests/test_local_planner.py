@@ -16,9 +16,10 @@ class TestLocalPlanner(unittest.TestCase):
     def test_build_profile_risk_count_variant(self) -> None:
         plan = self.planner.build("风险等级至少R3的客户有几个？", "s1")
         self.assertEqual(plan.intent, "profile")
-        self.assertEqual(plan.case_tag, "profile_aggregate_value")
+        self.assertEqual(plan.case_tag, "profile_count")
         self.assertEqual(plan.tool_calls[0].name, "profile_query")
         self.assertEqual(plan.tool_calls[0].params["field"], "risk_level")
+        self.assertEqual(plan.tool_calls[0].params["agg"], "count")
 
     def test_build_retirement_aggregate_no_gap(self) -> None:
         plan = self.planner.build("通胀按3%算时，哪几位客户依然没有养老资金缺口？", "s1")
@@ -66,7 +67,7 @@ class TestLocalPlanner(unittest.TestCase):
             "风险等级至少R3的客户有几个？",
             "s1",
         )
-        self.assertEqual(merged.case_tag, "profile_aggregate_value")
+        self.assertEqual(merged.case_tag, "profile_count")
         self.assertEqual(merged.tool_calls[0].name, "profile_query")
 
 
