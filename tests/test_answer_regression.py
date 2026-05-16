@@ -42,6 +42,24 @@ class TestAnswerRegression(unittest.TestCase):
         assert llm.messages is not None
         self.assertIn("只输出最终值", llm.messages[1]["content"])
 
+    def test_q1_single_value_supports_saving_and_pension(self) -> None:
+        llm = _StubLLMClient("1000.00 元")
+        composer = LLMComposer(llm)
+        plan = PlannerOutput(
+            intent="profile",
+            customer_id="V500001",
+            memory_update=MemoryUpdate(),
+            tool_calls=[],
+            answer_mode="short",
+            case_tag="profile_single_value",
+        )
+        answer = composer.compose(
+            "客户 V500001 每月可结余多少元？",
+            plan,
+            {"get_profile": {"monthly_saving": "1000.00"}},
+        )
+        self.assertEqual(answer, "1000 元")
+
     def test_q13_min_risk_answer_shape(self) -> None:
         llm = _StubLLMClient("固收 + 产品配置 73%；现金理财 10%；年金险 17%\n主力产品为固收 + 产品。")
         composer = LLMComposer(llm)

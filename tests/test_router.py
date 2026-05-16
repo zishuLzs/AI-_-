@@ -186,6 +186,20 @@ class TestIntentRouter(unittest.TestCase):
             "minimize_risk",
         )
 
+    def test_extract_extra_monthly_saving_variant(self) -> None:
+        route = self.router.route(
+            "如果客户 V500001 每月额外储蓄1000元，他在退休时可以积攒下多少钱？",
+            "s1",
+        )
+        self.assertEqual(route.scenario.get("extra_monthly_saving"), Decimal("1000"))
+
+    def test_extract_extra_monthly_saving_with_zai(self) -> None:
+        route = self.router.route(
+            "V500001如果每月再多存1000，退休能攒多少？",
+            "s1",
+        )
+        self.assertEqual(route.scenario.get("extra_monthly_saving"), Decimal("1000"))
+
 
 if __name__ == "__main__":
     unittest.main()

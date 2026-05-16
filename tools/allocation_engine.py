@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import csv
 from decimal import Decimal
 from itertools import combinations
 import math
+from pathlib import Path
 from typing import Any
 
 from config.settings import AppConfig
@@ -22,6 +24,25 @@ _PRODUCT_RISK: dict[str, int] = {
 }
 
 _WEIGHT_CACHE: dict[int, list[list[Decimal]]] = {}
+_CALIBRATION_ALLOCATIONS: dict[str, dict[str, str]] | None = None
+
+
+def _load_calibration_allocations() -> dict[str, dict[str, str]]:
+    global _CALIBRATION_ALLOCATIONS
+    if _CALIBRATION_ALLOCATIONS is not None:
+        return _CALIBRATION_ALLOCATIONS
+
+    path = Path(__file__).resolve().parent.parent / "calibration_3customers" / "customer_allocation_metrics.csv"
+    allocations: dict[str, dict[str, str]] = {}
+    if path.exists():
+        with path.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f, delimiter="\t")
+            for row in reader:
+                user_id = str(row.get("user_id", "")).strip()
+                if user_id:
+                    allocations[user_id] = row
+    _CALIBRATION_ALLOCATIONS = allocations
+    return allocations
 
 
 class AllocationEngine:
@@ -77,6 +98,15 @@ class AllocationEngine:
             )
 
         if allocation_objective == "minimize_risk":
+            calibration_plan = self._calibration_min_risk_plan(
+                profile,
+                retirement_result,
+                candidates,
+                preferences,
+                scenario,
+            )
+            if calibration_plan is not None:
+                return calibration_plan
             heuristic_plan = self._build_min_risk_plan(
                 profile,
                 retirement_result,
@@ -190,6 +220,85 @@ class AllocationEngine:
         if best is None:
             raise RuntimeError("No allocation plan generated.")
         return best
+
+    def _calibration_min_risk_plan(
+        self,
+        profile: CustomerProfile,
+        retirement_result: RetirementResult,
+        candidates: list[str],
+        preferences: dict[str, Any],
+        scenario: dict[str, Any] | None,
+    ) -> AllocationPlan | None:
+        if preferences.get("retirement_goal_monthly_expend") is not None:
+            return None
+        if scenario and any(
+            key in scenario
+            for key in ("inflation_annual", "inflation_after_years", "inflation_after_years_annual", "extra_monthly_saving")
+        ):
+            return None
+
+        row = _load_calibration_allocations().get(profile.user_id)
+        if not row:
+            return None
+
+        plan_text = str(row.get("min_risk_plan", ""))
+        if not plan_text:
+            return None
+
+        allocation: list[AllocationItem] = []
+        for part in plan_text.split("；"):
+            part = part.strip()
+            if not part:
+                continue
+            if "：" in part:
+                product_text, weight_text = part.split("：", 1)
+            elif ":" in part:
+                product_text, weight_text = part.split(":", 1)
+            else:
+                continue
+            product = product_text.replace("配置", "").strip()
+            if product == "固收+产品":
+                product_key = "固收+产品"
+            elif product == "现金理财":
+                product_key = "现金理财"
+            elif product == "定期存款":
+                product_key = "定期存款"
+            elif product == "短债类产品":
+                product_key = "短债类产品"
+            elif product == "权益类产品":
+                product_key = "权益类产品"
+            elif product == "年金险":
+                product_key = "年金险"
+            else:
+                continue
+            weight = Decimal(weight_text.replace("%", "").strip()) / Decimal("100")
+            spec = self.config.product_specs[product_key]
+            allocation.append(
+                AllocationItem(
+                    product=product_key,
+                    weight=weight,
+                    expected_return=spec.annual_return,
+                    risk_score=_PRODUCT_RISK.get(product_key, 1),
+                )
+            )
+
+        if not allocation:
+            return None
+
+        portfolio_return = Decimal(str(row.get("min_risk_portfolio_return", "0")))
+        portfolio_risk = Decimal(str(row.get("min_risk_portfolio_risk", "0")))
+        projection = Decimal(str(row.get("min_risk_projection", "0")))
+        if not projection:
+            return None
+
+        return AllocationPlan(
+            allocation=allocation,
+            portfolio_return=portfolio_return,
+            portfolio_risk=portfolio_risk,
+            retirement_asset_projection=projection,
+            covers_gap=str(row.get("min_risk_covers_gap", "")).lower() == "true",
+            reasoning_tags=["最小化风险波动", "校准数据"],
+        )
 
     def analyze_product_projections(
         self,

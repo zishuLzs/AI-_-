@@ -114,7 +114,7 @@ class IntentRouter:
             # Monthly expenditure target
             if any(
                 k in clause
-                for k in ("每月生活费", "每月需要支出", "每月想要", "每月希望")
+                for k in ("每月生活费", "每月需要支出", "每月想要", "每月希望", "每月花")
             ):
                 amount = self._extract_money_value(clause)
                 if amount is not None:
@@ -132,7 +132,7 @@ class IntentRouter:
 
             # Extra monthly saving (always scenario — inherently hypothetical)
             saving_match = re.search(
-                r"每月(?:多存|多攒|多储蓄)\s*([0-9]+(?:\.[0-9]+)?)\s*(万)?\s*元",
+                r"每月(?:(?:再)?(?:多存|多攒|多储蓄)|额外(?:储蓄|多存|多攒))\s*([0-9]+(?:\.[0-9]+)?)\s*(万)?\s*元?",
                 clause,
             )
             if saving_match:

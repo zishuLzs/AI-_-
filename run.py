@@ -123,11 +123,14 @@ class PensionPlanningAgent:
             if name not in tool_names:
                 plan.tool_calls.append(ToolCall(name=name, params=params or {}))
 
-        if plan.intent == "retirement" and plan.case_tag in {
+        if plan.intent == "profile" and plan.case_tag == "profile_single_value":
+            _ensure("get_profile")
+        elif plan.intent == "retirement" and plan.case_tag in {
             "retirement_duration",
             "retirement_monthly_spend",
             "retirement_required_asset",
             "retirement_accumulated_asset",
+            "retirement_scenario_inflation",
         }:
             _ensure("get_profile")
             _ensure("calculate_retirement")
@@ -140,6 +143,8 @@ class PensionPlanningAgent:
             _ensure("analyze_behavior_single")
             _ensure("calculate_retirement")
             _ensure("build_allocation")
+        elif plan.intent == "allocation" and plan.case_tag == "allocation_prediction":
+            _ensure("analyze_behavior_single")
         elif plan.intent == "proposal":
             _ensure("get_profile")
             _ensure("analyze_behavior_single")
@@ -180,7 +185,11 @@ class PensionPlanningAgent:
             return "好的，已记录这些偏好与关注点，后续测算和建议会据此进行。"
 
         # Step 5: If no tool results and intent needs data, return error
-        if not tool_results and plan.intent not in ("profile", "fallback"):
+        if (
+            not tool_results
+            and plan.intent not in ("profile", "fallback")
+            and plan.case_tag != "allocation_longevity_adjust"
+        ):
             return "抱歉，当前问题所需信息不完整。"
 
         # Step 6: LLM Composer — generate final answer

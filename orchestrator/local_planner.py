@@ -26,7 +26,16 @@ class LocalPlanner:
             intent = "retirement"
             case_tag = "retirement_scenario_inflation"
             answer_mode = "normal"
-        elif "最小化风险波动" in question or "风险最小" in question or "最小风险方案" in question:
+        elif "长寿" in question or "寿命延长" in question:
+            intent = "allocation"
+            case_tag = "allocation_longevity_adjust"
+            answer_mode = "short"
+        elif (
+            "最小化风险波动" in question
+            or "风险最小" in question
+            or "最小风险方案" in question
+            or "尽量稳一点" in question
+        ):
             intent = "allocation"
             case_tag = "allocation_min_risk"
             answer_mode = "normal"
@@ -34,7 +43,7 @@ class LocalPlanner:
             intent = "allocation"
             case_tag = "allocation_max_return"
             answer_mode = "normal"
-        elif "寿命" in question and "90岁" in question:
+        elif "寿命" in question and ("90岁" in question or "更长寿" in question or "延长" in question):
             intent = "allocation"
             case_tag = "allocation_longevity_adjust"
             answer_mode = "short"
@@ -99,6 +108,10 @@ class LocalPlanner:
         if case_tag == "allocation_min_risk" and self._is_allocation_metric_question(question):
             case_tag = "allocation_metric"
             answer_mode = "short"
+
+        if case_tag in {"allocation_min_risk", "allocation_metric"} and "minimize_risk" not in route.preferences.get("allocation_objective", ""):
+            if any(token in question for token in ("最小化风险波动", "风险最小", "最小风险方案", "尽量稳一点", "尽量稳")):
+                route.preferences["allocation_objective"] = "minimize_risk"
 
         return PlannerOutput(
             intent=intent,
@@ -180,7 +193,7 @@ class LocalPlanner:
     def _is_product_query(question: str) -> bool:
         return (
             ("全投" in question or "全买" in question or "只投" in question or "全部投资" in question)
-            and any(token in question for token in ("够不够", "能否达成", "目标够不够", "还差多少钱"))
+            and any(token in question for token in ("够不够", "能否达成", "目标够不够", "还差多少钱", "呢"))
         ) or "收益率最低但能够覆盖养老缺口" in question or "哪种单一产品攒得最多" in question
 
     @staticmethod
@@ -204,13 +217,18 @@ class LocalPlanner:
             token in question
             for token in (
                 "年龄",
+                "几岁",
+                "多大",
                 "月收入",
                 "收入",
                 "净资产",
                 "风险",
                 "养老金",
                 "企业年金",
+                "退休金",
                 "结余",
+                "能攒",
+                "攒钱",
                 "月支出",
                 "中位数",
                 "最高",
@@ -226,6 +244,13 @@ class LocalPlanner:
 
     @staticmethod
     def _is_retirement_query(question: str) -> bool:
+        if any(token in question for token in ("能攒", "攒钱")) and "退休" not in question:
+            return False
+        if any(token in question for token in ("退休金", "养老金", "企业年金")) and not any(
+            token in question
+            for token in ("缺口", "积攒", "攒", "距离退休", "离退休", "退休还有多久", "退休后", "退休时", "退休当月")
+        ):
+            return False
         return any(
             token in question
             for token in (
@@ -233,7 +258,6 @@ class LocalPlanner:
                 "缺口",
                 "积攒",
                 "攒",
-                "养老金",
                 "距离",
                 "离退休",
                 "默认情景",
@@ -336,7 +360,7 @@ class LocalPlanner:
 
     @staticmethod
     def _build_retirement_case_tag(question: str) -> str:
-        if "谁的" in question or "哪些客户" in question or "哪几位客户" in question or "总共" in question:
+        if "谁的" in question or "哪些客户" in question or "哪几位客户" in question or "有哪些" in question or "总共" in question:
             if "缺口最大" in question:
                 return "retirement_ranking"
             return "retirement_aggregate"
@@ -344,7 +368,13 @@ class LocalPlanner:
             return "retirement_gap"
         if "距离退休" in question or "离退休" in question or "退休还有多久" in question:
             return "retirement_duration"
-        if "每月需要支出" in question or "退休时支出" in question or "第一个月大概要花" in question or "刚退休时每月预计要花" in question:
+        if (
+            "每月需要支出" in question
+            or "退休时支出" in question
+            or "第一个月大概要花" in question
+            or "刚退休时每月预计要花" in question
+            or "退休当月大概要花" in question
+        ):
             return "retirement_monthly_spend"
         if "最低需要积攒" in question or "最低需要攒" in question:
             return "retirement_required_asset"
@@ -353,17 +383,21 @@ class LocalPlanner:
     def _build_retirement_query_params(
         self, question: str, customer_id: str | None
     ) -> dict[str, object]:
-        if "哪些客户" in question or "哪几位客户" in question:
+        if "哪些客户" in question or "哪几位客户" in question or "有哪些" in question:
             return {"metric": "no_gap", "agg": "list_customer_ids"}
         if "缺口最大" in question:
             return {"metric": "gap", "agg": "max_customer_id"}
-        if "总共" in question and ("最低需要积攒" in question or "至少要准备" in question):
+        if "总共" in question and (
+            "最低需要积攒" in question
+            or "最低总共需要积攒" in question
+            or "至少要准备" in question
+        ):
             return {"metric": "required_asset", "agg": "sum"}
         if "总共" in question and ("预计总共可以积攒" in question or "总共能积攒" in question):
             return {"metric": "accumulated_asset", "agg": "sum"}
         if "缺口" in question:
             return {"metric": "gap", "agg": "value", "customer_id": customer_id}
-        if "第一个月大概要花" in question or "刚退休时每月预计要花" in question:
+        if "第一个月大概要花" in question or "刚退休时每月预计要花" in question or "退休当月大概要花" in question:
             return {"metric": "monthly_spend", "agg": "value", "customer_id": customer_id}
         if "距离退休" in question or "离退休" in question or "退休还有多久" in question:
             return {"metric": "duration", "agg": "value", "customer_id": customer_id}

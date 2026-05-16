@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from decimal import Decimal
 from typing import Any
 
 from llm.client import LLMClient
@@ -143,16 +144,22 @@ class LLMComposer:
         case_tag = plan.case_tag
 
         if case_tag == "profile_single_value":
-            if "年龄" in question and profile.get("age") is not None:
+            if "结余" in question and profile.get("monthly_saving") is not None:
+                return f"{self._format_money_value(profile['monthly_saving'])} 元"
+            if any(token in question for token in ("年龄", "几岁", "多大")) and profile.get("age") is not None:
                 return f"{profile['age']} 岁"
             if ("月收入" in question or "收入" in question) and profile.get("monthly_income") is not None:
-                return f"{profile['monthly_income']} 元"
+                return f"{self._format_money_value(profile['monthly_income'])} 元"
             if ("月支出" in question or "支出" in question) and profile.get("monthly_expend") is not None:
-                return f"{profile['monthly_expend']} 元"
+                return f"{self._format_money_value(profile['monthly_expend'])} 元"
+            if "企业年金" in question and profile.get("enterprise_ann") is not None:
+                return f"{self._format_money_value(profile['enterprise_ann'])} 元"
+            if any(token in question for token in ("退休金", "养老金")) and profile.get("pension") is not None:
+                return f"{self._format_money_value(profile['pension'])} 元"
             if "风险" in question and profile.get("risk_level") is not None:
                 return str(profile["risk_level"])
             if "净资产" in question and profile.get("net_asset") is not None:
-                return f"{profile['net_asset']} 元"
+                return f"{self._format_money_value(profile['net_asset'])} 元"
 
         if case_tag == "profile_count":
             for result in tool_results.values():
@@ -250,6 +257,13 @@ class LLMComposer:
             retirement_query = tool_results.get("retirement_query", {})
             if isinstance(retirement_query, dict) and retirement_query.get("result"):
                 return str(retirement_query["result"])
+            if any(token in question for token in ("第一个月大概要花", "刚退休时每月预计要花", "退休当月大概要花")):
+                return f"{retirement['retirement_monthly_expend']} 元"
+            if "缺口" in question:
+                gap_value = int(retirement["gap"])
+                if gap_value <= 0:
+                    return "在当前假设下不存在资金缺口"
+                return f"{gap_value} 元"
             amount = f"{retirement['required_asset_at_retirement']} 元"
             years, rate = self._extract_inflation_override(question)
             if years is not None and rate is not None:
@@ -389,3 +403,7 @@ class LLMComposer:
         if not match:
             return None, None
         return int(match.group(1)), match.group(2)
+
+    @staticmethod
+    def _format_money_value(value: object) -> str:
+        return str(Decimal(str(value)).quantize(Decimal("1")))

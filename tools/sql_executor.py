@@ -108,6 +108,7 @@ class SQLExecutor:
                     cursor.execute(sql, params)
                     return cursor.fetchone()
             else:
+                sql = self._normalize_sqlite_sql(sql)
                 row = conn.execute(sql, params or ()).fetchone()
                 return dict(row) if row else None
         finally:
@@ -121,7 +122,12 @@ class SQLExecutor:
                     cursor.execute(sql, params)
                     return cursor.fetchall()
             else:
+                sql = self._normalize_sqlite_sql(sql)
                 rows = conn.execute(sql, params or ()).fetchall()
                 return [dict(row) for row in rows]
         finally:
             conn.close()
+
+    @staticmethod
+    def _normalize_sqlite_sql(sql: str) -> str:
+        return sql.replace("%s", "?")

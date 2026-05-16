@@ -34,6 +34,23 @@ class TestLocalPlanner(unittest.TestCase):
         )
         self.assertEqual(plan.intent, "allocation")
         self.assertEqual(plan.case_tag, "allocation_metric")
+        self.assertEqual(plan.memory_update.preferences.get("allocation_objective"), "minimize_risk")
+
+    def test_build_profile_pension_field_stays_profile(self) -> None:
+        plan = self.planner.build("客户V500003预计退休金有多少？", "s1")
+        self.assertEqual(plan.intent, "profile")
+        self.assertEqual(plan.case_tag, "profile_single_value")
+
+    def test_build_retirement_aggregate_required_asset(self) -> None:
+        plan = self.planner.build("这3位客户在默认情景下退休时最低总共需要积攒多少钱？", "s1")
+        self.assertEqual(plan.intent, "retirement")
+        self.assertEqual(plan.case_tag, "retirement_aggregate")
+        self.assertEqual(plan.tool_calls[0].params["metric"], "required_asset")
+
+    def test_build_longevity_adjust_variant(self) -> None:
+        plan = self.planner.build("如果客户V500001觉得以后大家都更长寿了，他最该补哪类产品？", "s1")
+        self.assertEqual(plan.intent, "allocation")
+        self.assertEqual(plan.case_tag, "allocation_longevity_adjust")
 
     def test_merge_structured_plan_overrides_legacy_tools(self) -> None:
         llm_plan = PlannerOutput(
